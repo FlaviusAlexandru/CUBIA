@@ -55,7 +55,7 @@ public class WideScreenshotCapture : MonoBehaviour
     [Header("Output")]
     [Tooltip("Folder relative to the project root (outside Assets) or an absolute path.")]
     public string outputFolder = "Screenshots";
-    public string filePrefix = "vrvdm";
+    public string filePrefix = "cubia";
 
     Camera _captureCamera;
 

@@ -1,0 +1,67 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: IATK_LinkedVisualisation
+  m_Shader: {fileID: 4800000, guid: 07b3f8051ce19794fbaad3c1a64137f7, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _MainTex:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _MaxNormX: 1
+    - _MaxNormY: 1
+    - _MaxNormZ: 1
+    - _MaxSize: 0
+    - _MaxX: 1
+    - _MaxY: 1
+    - _MaxZ: 1
+    - _MinNormX: 0
+    - _MinNormY: 0
+    - _MinNormZ: 0
+    - _MinSize: 0
+    - _MinX: 0
+    - _MinY: 0
+    - _MinZ: 0
+    - _MyDstMode: 10
+    - _MySrcMode: 5
+    - _Size: 5
+    m_Colors:
+    - _bbl1: {r: -1, g: -1, b: -1, a: 0}
+    - _bbl2: {r: -1, g: -1, b: -1, a: 0}
+    - _bbr1: {r: 1, g: -1, b: -1, a: 0}
+    - _bbr2: {r: 1, g: -1, b: -1, a: 0}
+    - _btl1: {r: -1, g: 1, b: -1, a: 0}
+    - _btl2: {r: -1, g: 1, b: -1, a: 0}
+    - _btr1: {r: 1, g: 1, b: -1, a: 0}
+    - _btr2: {r: 1, g: 1, b: -1, a: 0}
+    - _fbl1: {r: -1, g: -1, b: 0, a: 0}
+    - _fbl2: {r: -1, g: -1, b: 0, a: 0}
+    - _fbr1: {r: 1, g: -1, b: 0, a: 0}
+    - _fbr2: {r: 1, g: -1, b: 0, a: 0}
+    - _ftl1: {r: -1, g: 1, b: 0, a: 0}
+    - _ftl2: {r: -1, g: 1, b: 0, a: 0}
+    - _ftr1: {r: 1, g: 1, b: 0, a: 0}
+    - _ftr2: {r: 1, g: 1, b: 0, a: 0}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

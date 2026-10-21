@@ -24,6 +24,7 @@ CUBIA is a Unity 6 framework for VR scatterplots. Data are prepared on the deskt
 | 4.5 Interaction (gaze picking, tooltips, shuffle) | `Assets/Scripts/Scatterplot/GPUPointInteractable.cs`, `CoordinateSystemInteractable.cs`, `ScatterplotUI.cs` |
 | 5 Benchmark harness (our back-ends) | `Assets/Scripts/Benchmark/BenchmarkingManager.cs`, scene `Assets/Scenes/VisualizerSceneTest.unity` |
 | 5 IATK condition | `Assets/Scripts/IATKBench/IATKBenchmarkRunner.cs` (harness copy), `IATKCDatasetSource.cs` (`.cdataset` adapter), `Editor/IATKBenchmarkBuild.cs` (scene setup and build) |
+| 6 Results (Figures 3–5, Table 2) | `analysis/paper_figures.R`, raw data in `analysis/results/` |
 
 ## Requirements
 
@@ -76,6 +77,24 @@ IATK (master branch, May 2023) is included under `Assets/IATK/` under its MIT li
    Unity.exe -batchmode -quit -projectPath . -executeMethod DataViz.EditorTools.IATKBenchmarkBuild.Build -iatkOut "Builds/IATK/CUBIA.exe"
    ```
 3. Run it with the same command-line arguments as above. The runner reads all trial settings from the scene's (disabled) `BenchmarkingManager`, so both harnesses use identical values; the CSV schema is the same, with `Pipeline = IATK`.
+
+## Benchmark data and analysis
+
+`analysis/results/` holds the raw per-session CSVs behind the paper (one long-format file per session; `RowType` is `frame`, `build`, `memory`, `env` or `timeout`):
+
+- `benchmark_results_standalone_s{1,2,3}_*.csv`: Instanced Mesh, CPU Particles and GPU Particles
+- `benchmark_results_IATK_standalone_s{1,2,3}_*.csv`: Single Mesh (IATK)
+
+`analysis/paper_figures.R` reduces frames to window medians, window medians to one value per session, and reports mean ± SD over the three sessions. It writes Figures 3–5 and a table of the capacity and per-point columns of Table 2 (`tab_capacity.tex`) to `analysis/results/paper_labels/`:
+
+```
+cd analysis
+Rscript paper_figures.R results
+```
+
+Requires R with `dplyr`, `tidyr`, `readr`, `stringr`, `purrr`, `ggplot2`, `scales` and `patchwork`.
+
+Note: the `xrRefreshHz` field in the `env` rows is a single reading taken when each condition starts and occasionally shows 30 or 45 Hz while the runtime recovers from the previous condition. The analysis uses only the per-frame timings in the `frame` rows; wherever a renderer meets the budget, these sit at the 11.1 ms (90 Hz) vsync interval, including in the conditions with such a reading.
 
 ## Licence
 

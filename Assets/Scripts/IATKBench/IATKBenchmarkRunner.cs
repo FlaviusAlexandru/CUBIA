@@ -10,7 +10,7 @@ using UnityEngine.XR;
 namespace DataViz
 {
     /// <summary>
-    /// Runs the GRIVAPP benchmark protocol (BenchmarkingManager) with IATK as the renderer,
+    /// Runs the CUBIA benchmark protocol (BenchmarkingManager) with IATK as the renderer,
     /// so its numbers can be compared directly with the Instanced / Particle / VFX runs.
     ///
     /// Protocol, view control, frame timing, flags, env logging, session chaining and the

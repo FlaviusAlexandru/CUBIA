@@ -5,7 +5,7 @@ using UnityEngine;
 namespace DataViz
 {
     /// <summary>
-    /// IATK DataSource backed by a GRIVAPP .cdataset (DatasetColumnar), so IATK can be
+    /// IATK DataSource backed by a CUBIA .cdataset (DatasetColumnar), so IATK can be
     /// benchmarked on exactly the same files as the Instanced/Particle/VFX pipelines -
     /// including the 1e7 tier, which IATK's own CSVDataSource cannot parse (1.5 GB CSV).
     ///

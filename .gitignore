@@ -84,3 +84,6 @@ crashlytics-build.properties
 /Assets/StreamingAssets/DataCSV/benchmark_1e7.csv.meta
 /Assets/StreamingAssets/DataCSV/ProcessedData/benchmark_1e7.cdataset
 /Assets/StreamingAssets/DataCSV/ProcessedData/benchmark_1e7.cdataset.meta
+
+# Benchmark builds
+/Builds/

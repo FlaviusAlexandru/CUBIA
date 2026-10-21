@@ -1,4 +1,4 @@
-# VRVDM&VIZ - VR Data Visualization
+# CUBIA - Columnar Unity-Based Immersive Analytics
 
 <img width="1299" height="751" alt="image" src="https://github.com/user-attachments/assets/ee5fba77-ed20-4f9c-9763-f90e6bcc3f28" />
 

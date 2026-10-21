@@ -10,8 +10,8 @@ namespace DataViz.EditorTools
     /// <summary>
     /// Batch-mode entry points for the IATK comparison benchmark.
     ///   Unity.exe -batchmode -quit -projectPath ... -executeMethod DataViz.EditorTools.IATKBenchmarkBuild.SetupScene
-    ///   Unity.exe -batchmode -quit -projectPath ... -executeMethod DataViz.EditorTools.IATKBenchmarkBuild.Build -iatkOut "C:\path\VRVDM&VIZ.exe"
-    /// SetupScene derives IATKBenchmarkScene from the benchmark scene (VisualizerSceneTest): the GRIVAPP
+    ///   Unity.exe -batchmode -quit -projectPath ... -executeMethod DataViz.EditorTools.IATKBenchmarkBuild.Build -iatkOut "Builds/IATK/CUBIA.exe"
+    /// SetupScene derives IATKBenchmarkScene from the benchmark scene (VisualizerSceneTest): the CUBIA
     /// point renderers are disabled, the BenchmarkingManager is disabled and used only as the settings
     /// source, and an IATKBenchmarkRunner is added. Everything else (XR rig, URP, lighting) is unchanged.
     /// </summary>
@@ -42,7 +42,7 @@ namespace DataViz.EditorTools
             report.AppendLine($"ScatterplotVisualizer on '{GetPath(viz.transform)}' pos={viz.transform.position} rot={viz.transform.eulerAngles} lossyScale={viz.transform.lossyScale} axisLength={viz.m_AxisLength}");
             report.AppendLine($"Manager PointSize={(mgr ? mgr.PointSize : -1)} ColorColumnIndex={(mgr ? mgr.ColorColumnIndex : -99)}");
 
-            // Turn off every GRIVAPP point/axis renderer so only IATK draws the data.
+            // Turn off every CUBIA point/axis renderer so only IATK draws the data.
             foreach (var c in viz.GetComponents<Behaviour>())
             {
                 if (c is ScatterplotVisualizer || c is ScatterplotInstancedRenderer || c is ScatterplotParticleRenderer ||
@@ -115,7 +115,7 @@ namespace DataViz.EditorTools
 
         public static void Build()
         {
-            string outPath = GetArg("-iatkOut") ?? @"C:\Users\FU05OG\Desktop\StandaloneBuild_IATK\VRVDM&VIZ.exe";
+            string outPath = GetArg("-iatkOut") ?? "Builds/IATK/CUBIA.exe";
             var opts = new BuildPlayerOptions
             {
                 scenes = new[] { IatkScene },

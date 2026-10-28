@@ -2,6 +2,26 @@
 """
 Columnar CSV Preprocessing Script for Unity Data Visualization
 Processes CSV files using pandas and outputs efficient binary columnar format
+
+.cdataset layout (little-endian; ColumnarBinaryImporter.cs reads it):
+  4 bytes  magic b'DVCB'
+  2 bytes  version (uint16) - currently 3
+  4 bytes  rowCount (uint32)
+  4 bytes  columnCount (uint32)
+  per column:
+    1 byte   name length, then the UTF-8 name
+    1 byte   type (1 = Numeric, 2 = Categorical, 3 = DateTime)
+    Numeric / DateTime: float32 min, float32 max, rowCount x float32
+    Categorical: uint32 n, n x (uint16 length + UTF-8 string), rowCount x int32 index
+    v3 only - validity mask, at the END of the column block (after the data):
+      ceil(rowCount / 8) bytes, 1 bit per row, LSB-first
+      (row r is bit (r % 8) of byte r // 8); 1 = the cell has a value,
+      0 = the cell was empty/unparseable in the CSV. Padding bits in the last
+      byte are 0.
+Missing cells are still written as 0.0 (Numeric/DateTime) or index 0
+(Categorical) so readers never see NaN; the mask is the only way to tell
+"missing" from a real 0 / first category. v2 files have no mask (every cell
+counts as present).
 """
 
 import pandas as pd
@@ -17,7 +37,7 @@ class ColumnarDatasetProcessor:
     
     # File format constants
     MAGIC_BYTES = b'DVCB'  # DataViz Columnar Binary
-    VERSION = 2  # v2: adds TYPE_DATETIME
+    VERSION = 3  # v2: adds TYPE_DATETIME; v3: adds a per-column validity mask (see module docstring)
     
     # Column type codes
     TYPE_NUMERIC = 1
@@ -145,6 +165,7 @@ class ColumnarDatasetProcessor:
             if col_type == "Numeric":
                 # Convert to numeric, handle errors
                 numeric_series = self.to_numeric_flexible(series)
+                column_data["valid"] = numeric_series.notna().values  # before fillna: empty/unparseable = missing
                 numeric_series = numeric_series.fillna(0.0)  # Replace NaN with 0
                 
                 # Get min/max
@@ -167,6 +188,7 @@ class ColumnarDatasetProcessor:
                 # precision survives the float32 round-trip.
                 date_series = pd.to_datetime(series, errors='coerce')
                 valid_dates = date_series.dropna()
+                column_data["valid"] = date_series.notna().values  # NaT = missing
                 
                 # Using Timestamp subtraction + Timedelta.total_seconds() here
                 # (rather than manual int64/1e9 math) because pandas' internal
@@ -205,6 +227,7 @@ class ColumnarDatasetProcessor:
                 
                 column_data["uniqueValues"] = unique_values
                 column_data["data"] = category_indices
+                column_data["valid"] = series.notna().values  # NaN rows were written as index 0 above
                 
                 print(f"  Column {idx}: {col_name_clean} (Categorical) {len(unique_values)} unique values")
             
@@ -277,6 +300,11 @@ class ColumnarDatasetProcessor:
                         # Write int32 category indices
                         data = col_data["data"]
                         data.tofile(f)
+                    
+                    # v3: validity mask at the end of the column block,
+                    # 1 bit per row, LSB-first, 1 = has a value.
+                    valid = np.asarray(col_data["valid"], dtype=bool)
+                    f.write(np.packbits(valid, bitorder='little').tobytes())
                 
             print(f"Saved binary dataset to: {output_file}")
             print(f"File size: {output_file.stat().st_size / (1024*1024):.2f} MB")

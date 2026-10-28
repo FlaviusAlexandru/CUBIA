@@ -6,7 +6,8 @@ Usage (from the repo root):
   python Tests/Preprocessor/test_preprocessor.py fixtures --update   # regenerate expected/ (review the diff!)
   python Tests/Preprocessor/test_preprocessor.py committed           # real CSVs vs committed ProcessedData/
 
-`fixtures` checks the parsing rules (decimal commas, dot decimals, timestamps).
+`fixtures` checks the parsing rules (decimal commas, dot decimals, timestamps,
+empty cells -> v3 validity mask).
 `committed` checks that every .cdataset in git was regenerated after its CSV
 or the script last changed.
 """
@@ -38,10 +39,21 @@ EXPECTED_TYPES = {
     },
     "dot_decimal": {"Dim_0": "Numeric", "Dim_1": "Numeric", "Dim_2": "Numeric", "label": "Categorical"},
     "timestamps": {"Timestamp": "DateTime", "value": "Numeric", "state": "Categorical"},
+    "missing_values": {"id": "Numeric", "value": "Numeric", "group": "Categorical", "when": "DateTime"},
 }
 EXPECTED_RANGES = {
     ("decimal_comma", "X slab [mm]"): (32.5, 582.5),
     ("decimal_comma", "Y slab [mm]"): (518.5, 618.5),
+}
+# Validity mask (format v3): rows that have a value, per column. Empty cells must
+# be marked missing even though the data arrays still hold 0 / index 0 for them;
+# missing_values.csv also has a real 0 in 'value' (row 5) that must stay valid.
+EXPECTED_VALID = {
+    ("missing_values", "id"): 10,
+    ("missing_values", "value"): 9,
+    ("missing_values", "group"): 8,
+    ("missing_values", "when"): 9,
+    ("dot_decimal", "label"): None,  # None = every row
 }
 
 
@@ -72,10 +84,16 @@ def run_preprocessor(csv_files, out_dir: Path) -> None:
 
 
 def read_columns(path: Path):
-    """Return {column name: (type name, min, max)} from a .cdataset file."""
+    """Return {column name: (type name, min, max, rows with a value)} from a .cdataset file.
+
+    v2 files have no validity mask (every row counts as having a value); v3 files
+    end each column block with ceil(rows / 8) mask bytes, 1 bit per row, LSB-first.
+    """
     b = path.read_bytes()
     assert b[:4] == b"DVCB", f"{path.name}: bad magic"
+    (version,) = struct.unpack_from("<H", b, 4)
     rows, cols = struct.unpack_from("<II", b, 6)
+    mask_len = (rows + 7) // 8
     p, result = 14, {}
     for _ in range(cols):
         n = b[p]; p += 1
@@ -83,13 +101,19 @@ def read_columns(path: Path):
         t = b[p]; p += 1
         if t in (1, 3):
             mn, mx = struct.unpack_from("<ff", b, p); p += 8 + rows * 4
-            result[name] = (TYPE_NAMES[t], mn, mx)
         else:
+            mn = mx = None
             (k,) = struct.unpack_from("<I", b, p); p += 4
             for _ in range(k):
                 (ln,) = struct.unpack_from("<H", b, p); p += 2 + ln
             p += rows * 4
-            result[name] = (TYPE_NAMES.get(t, f"type {t}"), None, None)
+        valid = rows
+        if version >= 3:
+            mask = b[p:p + mask_len]; p += mask_len
+            assert len(mask) == mask_len, f"{path.name}: truncated validity mask for '{name}'"
+            valid = sum(bin(byte).count("1") for byte in mask)
+        result[name] = (TYPE_NAMES.get(t, f"type {t}"), mn, mx, valid)
+    assert p == len(b), f"{path.name}: {len(b) - p} trailing bytes after the last column"
     return result
 
 
@@ -106,9 +130,20 @@ def check_fixtures(update: bool) -> list:
                 if got != want:
                     errors.append(f"{stem}: column '{col}' is {got}, expected {want}")
         for (stem, col), (lo, hi) in EXPECTED_RANGES.items():
-            _, mn, mx = read_columns(out / f"{stem}.cdataset")[col]
+            _, mn, mx, _ = read_columns(out / f"{stem}.cdataset")[col]
             if mn is None or abs(mn - lo) > 1e-3 or abs(mx - hi) > 1e-3:
                 errors.append(f"{stem}: column '{col}' range is [{mn}, {mx}], expected [{lo}, {hi}]")
+        for (stem, col), want in EXPECTED_VALID.items():
+            path = out / f"{stem}.cdataset"
+            (version,) = struct.unpack_from("<H", path.read_bytes(), 4)
+            if version < 3:
+                errors.append(f"{stem}: format version {version}, expected >= 3 (validity mask)")
+                continue
+            got = read_columns(path).get(col, (None, None, None, None))[3]
+            if want is None:
+                want = struct.unpack_from("<I", path.read_bytes(), 6)[0]
+            if got != want:
+                errors.append(f"{stem}: column '{col}' has {got} rows with a value, expected {want}")
 
         if update:
             EXPECTED.mkdir(exist_ok=True)

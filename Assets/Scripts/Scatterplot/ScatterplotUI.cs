@@ -71,6 +71,14 @@ namespace DataViz
         // instead of a raw shape number - both always read from this one list.
         public static readonly string[] k_GlyphShapeNames = { "Circle", "Square", "Triangle", "Diamond", "Cross", "Star" };
 
+        // First option of the Filter Value dropdown: keep every row that has a value in the
+        // filter column (sent to the manager as an empty FilterLabel).
+        public const string k_AnyFilterValueOption = "Any value";
+
+        // First option of the Glyph Label dropdown: the shape applies to every row that has a
+        // value in the glyph column (stored under MultiplayerScatterplotManager.AllValuesGlyphLabel).
+        public const string k_AllGlyphValuesOption = "All values";
+
         private List<string> m_AvailableDatasets = new();
         private bool m_IsUpdatingUI = false;
 
@@ -376,9 +384,12 @@ namespace DataViz
                 PopulateFilterIndexDropdown(m_Manager.FilterColumnIndex);
             }
 
+            // Option 0 is "Any value" (empty FilterLabel), which is what ClearOptions() in
+            // PopulateFilterIndexDropdown already left selected; only a picked value needs
+            // restoring. Search from 1 so a real value spelled "Any value" still resolves.
             if (m_FilterIndexDropdown != null && !string.IsNullOrEmpty(m_Manager.FilterLabel))
             {
-                int matchIndex = m_FilterIndexDropdown.options.FindIndex(opt => opt.text == m_Manager.FilterLabel);
+                int matchIndex = m_FilterIndexDropdown.options.FindIndex(1, opt => opt.text == m_Manager.FilterLabel);
                 if (matchIndex >= 0)
                 {
                     m_FilterIndexDropdown.value = matchIndex;
@@ -601,7 +612,7 @@ namespace DataViz
             Debug.Log($"[ScatterplotUI] Populating filter for column '{col.Name}' - Type: {col.Type}, IsNumeric: {col.IsNumeric}, IsCategorical: {col.IsCategorical}, UniqueValues.Count: {col.UniqueValues.Count}");
 
             m_FilterIndexDropdown.interactable = true;
-            List<string> options = new List<string>();
+            List<string> options = new List<string> { k_AnyFilterValueOption };
 
             // Handle numeric columns by building unique values from the data
             if (col.IsNumeric && col.UniqueValues.Count == 0)
@@ -611,6 +622,9 @@ namespace DataViz
                 HashSet<string> uniqueNumericValues = new HashSet<string>();
                 for (int rowIndex = 0; rowIndex < m_Manager.LoadedDataset.RowCount; rowIndex++)
                 {
+                    if (!m_Manager.LoadedDataset.HasValue(rowIndex, columnIndex))
+                        continue; // an empty cell's stored 0 is not a real value to offer
+
                     float value = m_Manager.LoadedDataset.GetNumericValue(rowIndex, columnIndex);
                     uniqueNumericValues.Add(value.ToString());
                 }
@@ -644,12 +658,11 @@ namespace DataViz
                 });
 
                 options.AddRange(sortedValues);
-                Debug.Log($"[ScatterplotUI] Populated filter index dropdown with {options.Count} values for column '{col.Name}'");
+                Debug.Log($"[ScatterplotUI] Populated filter index dropdown with {options.Count - 1} values for column '{col.Name}'");
             }
             else
             {
-                options.Add("All Values");
-                Debug.Log($"[ScatterplotUI] No unique values found for column '{col.Name}' - using 'All Values'");
+                Debug.Log($"[ScatterplotUI] No unique values found for column '{col.Name}' - only '{k_AnyFilterValueOption}'");
             }
 
             m_FilterIndexDropdown.AddOptions(options);
@@ -662,7 +675,8 @@ namespace DataViz
             // Get the selected filter value from the dropdown
             if (m_FilterIndexDropdown != null && idx >= 0 && idx < m_FilterIndexDropdown.options.Count)
             {
-                string selectedValue = m_FilterIndexDropdown.options[idx].text;
+                // Option 0 ("Any value") = no specific value: empty FilterLabel.
+                string selectedValue = idx == 0 ? "" : m_FilterIndexDropdown.options[idx].text;
                 m_Manager.RequestFilterLabelRpc(selectedValue);
             }
         }
@@ -690,6 +704,14 @@ namespace DataViz
         {
             if (m_GlyphLabelDropdown == null) return;
 
+            // This runs on every plot-settings change (SyncUIWithManager), so remember which
+            // label was being edited and re-select it below instead of jumping back to option 0.
+            string previouslySelected =
+                (columnIndex == m_GlyphLabelDropdownColumn && m_GlyphLabelDropdown.options.Count > 0)
+                    ? m_GlyphLabelDropdown.options[m_GlyphLabelDropdown.value].text
+                    : null;
+            m_GlyphLabelDropdownColumn = columnIndex;
+
             m_GlyphLabelDropdown.ClearOptions();
 
             if (columnIndex < 0 || m_Manager == null || m_Manager.LoadedDataset == null)
@@ -706,13 +728,16 @@ namespace DataViz
             }
 
             m_GlyphLabelDropdown.interactable = true;
-            List<string> options = new List<string>();
+            List<string> options = new List<string> { k_AllGlyphValuesOption };
 
             if (col.IsNumeric && col.UniqueValues.Count == 0)
             {
                 HashSet<string> uniqueNumericValues = new HashSet<string>();
                 for (int rowIndex = 0; rowIndex < m_Manager.LoadedDataset.RowCount; rowIndex++)
                 {
+                    if (!m_Manager.LoadedDataset.HasValue(rowIndex, columnIndex))
+                        continue; // an empty cell's stored 0 is not a real value to offer
+
                     float value = m_Manager.LoadedDataset.GetNumericValue(rowIndex, columnIndex);
                     uniqueNumericValues.Add(value.ToString());
                 }
@@ -745,6 +770,29 @@ namespace DataViz
             }
 
             m_GlyphLabelDropdown.AddOptions(options);
+
+            if (previouslySelected != null)
+            {
+                int restoredIndex = previouslySelected == k_AllGlyphValuesOption
+                    ? 0
+                    : options.FindIndex(1, opt => opt == previouslySelected);
+                if (restoredIndex > 0)
+                    m_GlyphLabelDropdown.SetValueWithoutNotify(restoredIndex);
+            }
+        }
+
+        // Column the Glyph Label dropdown was last populated for (-1 = none).
+        private int m_GlyphLabelDropdownColumn = -1;
+
+        /// <summary>
+        /// Manager-side label for the Glyph Label dropdown's current selection: option 0
+        /// ("All values") maps to the reserved label-wide key, anything else is the value itself.
+        /// </summary>
+        private string GetSelectedGlyphLabel()
+        {
+            return m_GlyphLabelDropdown.value == 0
+                ? MultiplayerScatterplotManager.AllValuesGlyphLabel
+                : m_GlyphLabelDropdown.options[m_GlyphLabelDropdown.value].text;
         }
 
         private void OnGlyphLabelUIChanged(int idx)
@@ -760,21 +808,22 @@ namespace DataViz
             if (m_IsUpdatingUI || m_Manager == null) return;
             if (m_GlyphLabelDropdown == null || m_GlyphLabelDropdown.options.Count == 0) return;
 
-            string selectedLabel = m_GlyphLabelDropdown.options[m_GlyphLabelDropdown.value].text;
-            m_Manager.RequestGlyphAssignmentRpc(selectedLabel, idx);
+            m_Manager.RequestGlyphAssignmentRpc(GetSelectedGlyphLabel(), idx);
         }
 
         /// <summary>
-        /// Shows whatever glyph is currently assigned to the selected label (or the
-        /// default) in the shape dropdown, without sending an assignment RPC.
+        /// Shows the glyph the selected label currently draws with in the shape dropdown,
+        /// without sending an assignment RPC: for "All values" the label-wide shape, for a
+        /// value its own assignment or, failing that, the label-wide shape it inherits.
         /// </summary>
         private void RefreshGlyphShapeDropdownSelection()
         {
             if (m_GlyphShapeDropdown == null || m_GlyphLabelDropdown == null || m_Manager == null) return;
             if (m_GlyphLabelDropdown.options.Count == 0) return;
 
-            string selectedLabel = m_GlyphLabelDropdown.options[m_GlyphLabelDropdown.value].text;
-            int assignedGlyph = m_Manager.GetGlyphForLabel(selectedLabel, 0);
+            int assignedGlyph = m_GlyphLabelDropdown.value == 0
+                ? m_Manager.GetGlyphForLabel(MultiplayerScatterplotManager.AllValuesGlyphLabel, 0)
+                : m_Manager.GetGlyphForRow(GetSelectedGlyphLabel(), true, 0);
 
             bool wasUpdating = m_IsUpdatingUI;
             m_IsUpdatingUI = true;

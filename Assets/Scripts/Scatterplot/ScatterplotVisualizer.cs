@@ -168,9 +168,10 @@ namespace DataViz
             // non-matching rows are NOT skipped - they stay in the buffer at a dimmed alpha so
             // they visually fade away instead of disappearing. This keeps row counts/indices
             // stable for GPUPointInteractable and avoids the plot "jumping" as points vanish.
+            // Active as soon as a filter column is chosen: with no value picked (empty FilterLabel,
+            // "Any value" in the UI) a row matches when it has a value in that column at all.
             int filterCol = m_Manager.FilterColumnIndex;
-            bool filterActive = filterCol >= 0 && filterCol < dataset.ColumnCount &&
-                                 !string.IsNullOrEmpty(m_Manager.FilterLabel);
+            bool filterActive = filterCol >= 0 && filterCol < dataset.ColumnCount;
             DatasetColumn filterColumn = filterActive ? dataset.Columns[filterCol] : null;
 
             // Snapshot the categorical lookup table once per regenerate rather than per-row.
@@ -187,7 +188,8 @@ namespace DataViz
             // Glyph column: independent of X/Y/Z (same as colorCol), so users can encode a
             // dimension via shape even when it isn't one of the plotted axes. The actual
             // shape per label is a manual mapping (m_Manager.GlyphAssignments), looked up
-            // per row below; labels with no assignment yet default to glyph 0.
+            // per row below: the value's own assignment, else the label-wide "All values"
+            // assignment, else glyph 0. Rows with no value in the column always get glyph 0.
             int glyphCol = m_Manager.GlyphColumnIndex;
             bool glyphActive = glyphCol >= 0 && glyphCol < dataset.ColumnCount;
             DatasetColumn glyphColumn = glyphActive ? dataset.Columns[glyphCol] : null;
@@ -273,7 +275,7 @@ namespace DataViz
                 if (glyphActive)
                 {
                     string rowLabel = GetRowLabel(dataset, i, glyphCol, glyphColumn, glyphCategoryTable);
-                    glyphIndex = m_Manager.GetGlyphForLabel(rowLabel, 0);
+                    glyphIndex = m_Manager.GetGlyphForRow(rowLabel, dataset.HasValue(i, glyphCol), 0);
                 }
                 glyphIndices.Add(glyphIndex);
 
@@ -821,6 +823,8 @@ namespace DataViz
         /// numeric: float.ToString(), matching ScatterplotUI.PopulateFilterIndexDropdown's
         /// formatting). Shared by filter matching, glyph lookup, and GPUPointInteractable's
         /// tooltip so all three always agree on what a row's "label" is for a given column.
+        /// Returns null when the cell has no value (see DatasetColumnar.HasValue), so a
+        /// missing cell never matches a picked value or a per-value glyph.
         /// </summary>
         public string GetRowLabel(
             DatasetColumnar dataset,
@@ -829,6 +833,9 @@ namespace DataViz
             DatasetColumn column,
             List<string> categoryTable)
         {
+            if (!dataset.HasValue(rowIndex, columnIndex))
+                return null;
+
             if (column.IsCategorical)
             {
                 int catIdx = dataset.GetCategoryIndex(rowIndex, columnIndex);
@@ -847,9 +854,11 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Checks whether dataset row i matches the active filter's selected value.
+        /// Checks whether dataset row i passes the active filter. With no value picked
+        /// (empty filterLabel / "Any value") a row passes when it has a value in the filter
+        /// column; with a value picked it must have exactly that value.
         /// </summary>
-        private bool RowMatchesFilter(
+        public bool RowMatchesFilter(
             DatasetColumnar dataset,
             int rowIndex,
             int filterCol,
@@ -860,6 +869,9 @@ namespace DataViz
             // Unknown column type - treat as non-filterable, don't dim.
             if (!filterColumn.IsCategorical && !filterColumn.IsNumeric)
                 return true;
+
+            if (string.IsNullOrEmpty(filterLabel))
+                return dataset.HasValue(rowIndex, filterCol);
 
             string rowLabel = GetRowLabel(dataset, rowIndex, filterCol, filterColumn, filterCategoryTable);
             return rowLabel != null && rowLabel == filterLabel;

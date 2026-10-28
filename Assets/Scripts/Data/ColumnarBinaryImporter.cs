@@ -29,6 +29,12 @@ using UnityEngine;
 ///         2 bytes  name length (uint16)
 ///         N bytes  name (UTF8)
 ///       rowCount * 4 bytes int32[] category indices (raw, little-endian)
+///     Version 3+ only, at the END of every column block (after the data above):
+///       ceil(rowCount / 8) bytes validity mask - 1 bit per row, LSB-first
+///       (row r is bit r % 8 of byte r / 8), 1 = the CSV cell had a value.
+///       Missing cells still hold 0 / category index 0 in the data arrays;
+///       use DatasetColumnar.HasValue to tell them apart. Version 2 files
+///       have no mask and every cell counts as present.
 ///
 /// All bulk arrays are read via Buffer.BlockCopy - a single memcpy per
 /// column, not a loop of per-element parses. On any little-endian platform
@@ -41,6 +47,8 @@ public static class ColumnarBinaryImporter
     private const byte TypeNumeric = 1;
     private const byte TypeCategorical = 2;
     private const byte TypeDateTime = 3;
+    private const ushort FirstVersionWithValidityMask = 3;
+    private const ushort LatestKnownVersion = 3;
 
     public static DatasetColumnar Load(string fileName)
     {
@@ -94,6 +102,14 @@ public static class ColumnarBinaryImporter
 
         int rowCount = (int)rowCountU;
         int columnCount = (int)columnCountU;
+
+        if (version > LatestKnownVersion)
+        {
+            Debug.LogWarning($"[ColumnarBinaryImporter] '{datasetName}' is format v{version}; this build knows up to v{LatestKnownVersion}. Reading it as v{LatestKnownVersion}.");
+        }
+
+        bool hasValidityMasks = version >= FirstVersionWithValidityMask;
+        int maskByteCount = (rowCount + 7) / 8;
 
         DatasetColumnar dataset = new DatasetColumnar(datasetName, rowCount, columnCount);
 
@@ -154,6 +170,15 @@ public static class ColumnarBinaryImporter
             {
                 Debug.LogError($"[ColumnarBinaryImporter] Unknown column type byte {typeByte} for column '{name}'.");
                 return null;
+            }
+
+            if (hasValidityMasks)
+            {
+                byte[] mask = new byte[maskByteCount];
+                Buffer.BlockCopy(bytes, offset, mask, 0, maskByteCount);
+                offset += maskByteCount;
+
+                dataset.SetValidityMask(col, mask);
             }
         }
 

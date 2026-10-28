@@ -46,6 +46,13 @@ public class DatasetColumnar
     private string[][] m_CategoryTables;
 
     /// <summary>
+    /// Per-column validity bitmask (format v3): 1 bit per row, LSB-first,
+    /// 1 = the source cell had a value. A null entry means every row of that
+    /// column has a value (v2 files, legacy CSV import).
+    /// </summary>
+    private byte[][] m_ValidityMasks;
+
+    /// <summary>
     /// Row views are created on demand in GetRow() - not stored here.
     /// A pre-allocated array of one object per row would re-introduce the
     /// exact "million small heap allocations" problem this columnar layout
@@ -64,6 +71,64 @@ public class DatasetColumnar
         m_NumericColumns = new float[columnCount][];
         m_CategoricalColumns = new int[columnCount][];
         m_CategoryTables = new string[columnCount][];
+        m_ValidityMasks = new byte[columnCount][];
+    }
+
+    /// <summary>
+    /// Set the validity mask for a column (ceil(RowCount / 8) bytes, LSB-first,
+    /// 1 = has a value). Pass null to mark every row as having a value.
+    /// </summary>
+    public void SetValidityMask(int columnIndex, byte[] mask)
+    {
+        if (columnIndex < 0 || columnIndex >= ColumnCount)
+            throw new ArgumentOutOfRangeException(nameof(columnIndex));
+
+        if (mask != null && mask.Length != (RowCount + 7) / 8)
+            throw new ArgumentException($"Expected {(RowCount + 7) / 8} mask bytes, got {mask.Length}");
+
+        m_ValidityMasks[columnIndex] = mask;
+    }
+
+    /// <summary>
+    /// True when the cell had a value in the source CSV. Missing cells are
+    /// stored as 0 (numeric/datetime) or category index 0, so this is the only
+    /// way to tell them apart from a real 0 or the first category.
+    /// </summary>
+    public bool HasValue(int rowIndex, int columnIndex)
+    {
+        if (columnIndex < 0 || columnIndex >= ColumnCount)
+            return false;
+
+        if (rowIndex < 0 || rowIndex >= RowCount)
+            return false;
+
+        byte[] mask = m_ValidityMasks[columnIndex];
+        if (mask == null)
+            return true;
+
+        return (mask[rowIndex >> 3] & (1 << (rowIndex & 7))) != 0;
+    }
+
+    /// <summary>
+    /// Number of rows in a column that have no value (0 for columns without a mask).
+    /// </summary>
+    public int GetMissingCount(int columnIndex)
+    {
+        if (columnIndex < 0 || columnIndex >= ColumnCount)
+            return 0;
+
+        byte[] mask = m_ValidityMasks[columnIndex];
+        if (mask == null)
+            return 0;
+
+        int missing = 0;
+        for (int row = 0; row < RowCount; row++)
+        {
+            if ((mask[row >> 3] & (1 << (row & 7))) == 0)
+                missing++;
+        }
+
+        return missing;
     }
 
     /// <summary>

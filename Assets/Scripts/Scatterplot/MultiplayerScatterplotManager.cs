@@ -235,6 +235,9 @@ namespace DataViz
         // Filtering will be used to chose a subset of the data to be displayed. Users will be able to chose a column "Filter label" and index/value "Filter Value"
         //to enable, for example, filtering by participant ID or a specific category.
         //This will help make the datasets less overwhelming and more manageable for users to explore.
+        //Filtering is active whenever FilterColumnIndex >= 0. An empty FilterLabel ("Any value" in
+        //the UI) keeps every row that HAS a value in that column; a non-empty FilterLabel keeps only
+        //rows with exactly that value. Everything else is dimmed by ScatterplotVisualizer.
         //</summary>
         [Header("Filtering Settings")]
         public int FilterColumnIndex = -1;
@@ -246,10 +249,19 @@ namespace DataViz
         // one of the plotted X/Y/Z axes - mirrors how ColorColumnIndex is already decoupled
         // from the axes. GlyphAssignments is the manual label -> glyph mapping; unassigned
         // labels fall back to glyph 0 (the base circle) in ScatterplotVisualizer.
+        // The reserved label AllValuesGlyphLabel ("All values" in the UI) is stored in the same
+        // list and applies to every row that has a value in the glyph column; a per-value
+        // assignment overrides it for that value. Rows with no value keep the default glyph.
         //</summary>
         [Header("Glyph Settings")]
         public int GlyphColumnIndex = -1;
         public List<GlyphAssignment> GlyphAssignments = new();
+
+        /// <summary>
+        /// Reserved GlyphAssignment.Label for the label-wide ("All values") shape. Starts with a
+        /// control character so it can never collide with a real CSV value.
+        /// </summary>
+        public const string AllValuesGlyphLabel = "\u0001AllValues";
 
         [System.Serializable]
         public class GlyphAssignment
@@ -534,6 +546,10 @@ namespace DataViz
                 IsPlaying = false;
                 GlyphColumnIndex = -1;
                 GlyphAssignments.Clear();
+                // A filter column index from the previous dataset would point at an unrelated
+                // column here (and filtering is now active for any column >= 0), so reset it.
+                FilterColumnIndex = -1;
+                FilterLabel = "";
 
                 OnPlotSettingsChanged?.Invoke();
             }
@@ -605,6 +621,11 @@ namespace DataViz
 
         public void RequestFilterIndexRpc(int columnIndex)
         {
+            // A value picked for the old column means nothing for the new one:
+            // fall back to "Any value" (empty FilterLabel).
+            if (columnIndex != FilterColumnIndex)
+                FilterLabel = "";
+
             FilterColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
@@ -654,6 +675,20 @@ namespace DataViz
 
             GlyphAssignment match = GlyphAssignments.Find(a => a.Label == label);
             return match != null ? match.GlyphIndex : defaultGlyph;
+        }
+
+        /// <summary>
+        /// Glyph for one row of the glyph column: its value's own assignment if it has one,
+        /// otherwise the label-wide "All values" assignment, otherwise defaultGlyph. Rows
+        /// with no value (hasValue false) always get defaultGlyph.
+        /// </summary>
+        public int GetGlyphForRow(string label, bool hasValue, int defaultGlyph = 0)
+        {
+            if (!hasValue)
+                return defaultGlyph;
+
+            int allValuesGlyph = GetGlyphForLabel(AllValuesGlyphLabel, defaultGlyph);
+            return GetGlyphForLabel(label, allValuesGlyph);
         }
 
 

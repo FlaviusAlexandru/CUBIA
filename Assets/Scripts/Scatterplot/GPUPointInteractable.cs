@@ -346,16 +346,16 @@ namespace DataViz
                 string text = $"<b>Row #{rowIndex + 1}</b>{(m_IsPinned ? " <color=#88CCFF>(pinned)</color>" : "")}\n";
 
                 if (xCol >= 0 && xCol < dataset.ColumnCount)
-                    text += $"<color=#FF4444>X ({dataset.Columns[xCol].Name}):</color> {row.GetRawValue(xCol)}\n";
+                    text += $"<color=#FF4444>X ({dataset.Columns[xCol].Name}):</color> {FormatCell(dataset, row, rowIndex, xCol)}\n";
 
                 if (yCol >= 0 && yCol < dataset.ColumnCount)
-                    text += $"<color=#44FF44>Y ({dataset.Columns[yCol].Name}):</color> {row.GetRawValue(yCol)}\n";
+                    text += $"<color=#44FF44>Y ({dataset.Columns[yCol].Name}):</color> {FormatCell(dataset, row, rowIndex, yCol)}\n";
 
                 if (zCol >= 0 && zCol < dataset.ColumnCount)
-                    text += $"<color=#4444FF>Z ({dataset.Columns[zCol].Name}):</color> {row.GetRawValue(zCol)}\n";
+                    text += $"<color=#4444FF>Z ({dataset.Columns[zCol].Name}):</color> {FormatCell(dataset, row, rowIndex, zCol)}\n";
 
                 if (colorCol >= 0 && colorCol < dataset.ColumnCount)
-                    text += $"<color=#FFFF44>Color ({dataset.Columns[colorCol].Name}):</color> {row.GetRawValue(colorCol)}\n";
+                    text += $"<color=#FFFF44>Color ({dataset.Columns[colorCol].Name}):</color> {FormatCell(dataset, row, rowIndex, colorCol)}\n";
 
                 int filterCol = m_Visualizer.m_Manager.FilterColumnIndex;
                 if (filterCol >= 0 && filterCol < dataset.ColumnCount)
@@ -365,15 +365,13 @@ namespace DataViz
                         ? new List<string>(filterColumn.UniqueValues)
                         : null;
                     string filterLabel = m_Visualizer.m_Manager.FilterLabel;
-                    string rowFilterLabel = m_Visualizer.GetRowLabel(dataset, rowIndex, filterCol, filterColumn, filterCategoryTable);
+                    bool matches = m_Visualizer.RowMatchesFilter(dataset, rowIndex, filterCol, filterColumn, filterCategoryTable, filterLabel);
 
-                    string matchTag = string.IsNullOrEmpty(filterLabel)
-                        ? ""
-                        : (rowFilterLabel == filterLabel
-                            ? " <color=#88FF88>(match)</color>"
-                            : " <color=#888888>(dimmed)</color>");
+                    string matchTag = matches
+                        ? " <color=#88FF88>(match)</color>"
+                        : " <color=#888888>(dimmed)</color>";
 
-                    text += $"<color=#FFAA44>Filter ({filterColumn.Name}):</color> {row.GetRawValue(filterCol)}{matchTag}\n";
+                    text += $"<color=#FFAA44>Filter ({filterColumn.Name}):</color> {FormatCell(dataset, row, rowIndex, filterCol)}{matchTag}\n";
                 }
 
                 int glyphCol = m_Visualizer.m_Manager.GlyphColumnIndex;
@@ -384,19 +382,30 @@ namespace DataViz
                         ? new List<string>(glyphColumn.UniqueValues)
                         : null;
                     string rowGlyphLabel = m_Visualizer.GetRowLabel(dataset, rowIndex, glyphCol, glyphColumn, glyphCategoryTable);
-                    int glyphIndex = m_Visualizer.m_Manager.GetGlyphForLabel(rowGlyphLabel, 0);
+                    int glyphIndex = m_Visualizer.m_Manager.GetGlyphForRow(rowGlyphLabel, dataset.HasValue(rowIndex, glyphCol), 0);
 
                     string glyphName = (glyphIndex >= 0 && glyphIndex < ScatterplotUI.k_GlyphShapeNames.Length)
                         ? ScatterplotUI.k_GlyphShapeNames[glyphIndex]
                         : $"#{glyphIndex}";
 
-                    text += $"<color=#44FFFF>Glyph ({glyphColumn.Name}):</color> {row.GetRawValue(glyphCol)} <color=#AAAAAA>[{glyphName}]</color>\n";
+                    text += $"<color=#44FFFF>Glyph ({glyphColumn.Name}):</color> {FormatCell(dataset, row, rowIndex, glyphCol)} <color=#AAAAAA>[{glyphName}]</color>\n";
                 }
 
                 m_TooltipText.text = text.TrimEnd('\n');
             }
 
             m_ActiveTooltip.SetActive(true);
+        }
+
+        /// <summary>
+        /// Tooltip text for one cell: its raw value, or "(no value)" when the CSV cell was empty
+        /// (the stored 0 / first category would otherwise look like a real value).
+        /// </summary>
+        private static string FormatCell(DatasetColumnar dataset, DatasetRowView row, int rowIndex, int columnIndex)
+        {
+            return dataset.HasValue(rowIndex, columnIndex)
+                ? row.GetRawValue(columnIndex)
+                : "<color=#888888>(no value)</color>";
         }
 
         private void EnsureAuraCreated()

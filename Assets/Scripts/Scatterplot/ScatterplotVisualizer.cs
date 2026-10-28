@@ -23,6 +23,24 @@ namespace DataViz
         [Range(0f, 1f)]
         public float m_FilteredOutAlpha = 0.08f;
 
+        [Header("Axis Label Settings")]
+        [Tooltip("Font size of the axis name + range labels (was 3).")]
+        public float m_AxisLabelFontSize = 7f;
+        [Tooltip("Distance from the axis to its name label, in plot units. Must be larger than the tick label offset.")]
+        public float m_AxisLabelOffset = 0.11f;
+        [Tooltip("Distance from the X/Z axis to its value (tick) labels on the floor, in plot units.")]
+        public float m_TickLabelOffset = 0.045f;
+
+        // Labels on the plot floor sit just above y = 0 so they don't z-fight the grid or sink into the table.
+        private const float k_FloorLift = 0.003f;
+        // TextMeshPro faces -Z and reads along +X. Flat on the floor, reading along +X, facing up:
+        private static readonly Quaternion k_FlatAlongX = Quaternion.Euler(90f, 0f, 0f);
+        // Flat on the floor beside the Z axis, top of the text toward the plot (+X), so it reads
+        // the right way up for someone standing at the plot's front-left:
+        private static readonly Quaternion k_FlatAlongZ = Quaternion.Euler(90f, 90f, 0f);
+        // Upright beside the Y axis, reading bottom-to-top:
+        private static readonly Quaternion k_UprightAlongY = Quaternion.Euler(0f, 0f, 90f);
+
         // Parent container for points
         private Transform m_PointsContainer;
         private Transform m_AxesContainer;
@@ -461,15 +479,17 @@ namespace DataViz
             CreateGridLine(new Vector3(0, m_AxisLength, m_AxisLength), new Vector3(m_AxisLength, m_AxisLength, m_AxisLength));
             CreateGridLine(new Vector3(m_AxisLength, 0, m_AxisLength), new Vector3(m_AxisLength, m_AxisLength, m_AxisLength));
 
-            // Axis labels names and ranges
+            // Axis labels: names and ranges, laid along each axis. X and Z lie flat on
+            // the plot's floor (just above y = 0) so they never sink into the table;
+            // Y stands upright and reads bottom-to-top beside the Y axis.
             if (xCol >= 0 && xCol < dataset.ColumnCount)
-                CreateAxisLabel(dataset.Columns[xCol], new Vector3(m_AxisLength / 2f, -0.1f, 0), "X_Label");
+                CreateAxisLabel(dataset.Columns[xCol], new Vector3(m_AxisLength / 2f, k_FloorLift, -m_AxisLabelOffset), k_FlatAlongX, "X_Label");
 
             if (yCol >= 0 && yCol < dataset.ColumnCount)
-                CreateAxisLabel(dataset.Columns[yCol], new Vector3(-0.1f, m_AxisLength / 2f, 0), "Y_Label");
+                CreateAxisLabel(dataset.Columns[yCol], new Vector3(-m_AxisLabelOffset, m_AxisLength / 2f, 0), k_UprightAlongY, "Y_Label");
 
             if (zCol >= 0 && zCol < dataset.ColumnCount)
-                CreateAxisLabel(dataset.Columns[zCol], new Vector3(0, -0.1f, m_AxisLength / 2f), "Z_Label");
+                CreateAxisLabel(dataset.Columns[zCol], new Vector3(-m_AxisLabelOffset, k_FloorLift, m_AxisLength / 2f), k_FlatAlongZ, "Z_Label");
         }
 
 
@@ -608,7 +628,8 @@ namespace DataViz
 
         private void CreateTickLabel(
             string text,
-            Vector3 position)
+            Vector3 position,
+            Quaternion rotation)
         {
             GameObject labelObj =
                 new GameObject("TickLabel");
@@ -620,6 +641,9 @@ namespace DataViz
 
             labelObj.transform.localPosition =
                 position;
+
+            labelObj.transform.localRotation =
+                rotation;
 
             labelObj.transform.localScale =
                 Vector3.one * 0.01f;
@@ -645,7 +669,7 @@ namespace DataViz
                 textObj.AddComponent<TextMeshPro>();
 
             tmp.text = text;
-            tmp.fontSize = 10f;
+            tmp.fontSize = 14f;
             tmp.alignment =
                 TextAlignmentOptions.Center;
 
@@ -680,9 +704,10 @@ namespace DataViz
                         value.ToString("F1"),
                         new Vector3(
                             x,
-                            -0.05f,
-                            0
-                        )
+                            k_FloorLift,
+                            -m_TickLabelOffset
+                        ),
+                        k_FlatAlongX
                     );
                 }
             }
@@ -708,7 +733,8 @@ namespace DataViz
                             -0.05f,
                             y,
                             0
-                        )
+                        ),
+                        Quaternion.identity
                     );
                 }
             }
@@ -730,10 +756,11 @@ namespace DataViz
                     CreateTickLabel(
                         value.ToString("F1"),
                         new Vector3(
-                            -0.05f,
-                            0,
+                            -m_TickLabelOffset,
+                            k_FloorLift,
                             z
-                        )
+                        ),
+                        k_FlatAlongZ
                     );
                 }
             }
@@ -794,11 +821,12 @@ namespace DataViz
             m_ActiveAxes.Add(lineObj);
         }
 
-        private void CreateAxisLabel(DatasetColumn column, Vector3 position, string name)
+        private void CreateAxisLabel(DatasetColumn column, Vector3 position, Quaternion rotation, string name)
         {
             GameObject labelObj = new GameObject(name);
             labelObj.transform.SetParent(m_AxesContainer, false);
             labelObj.transform.localPosition = position;
+            labelObj.transform.localRotation = rotation;
             labelObj.transform.localScale = Vector3.one * 0.03f;
 
             GameObject textObj = new GameObject("Text");
@@ -806,17 +834,21 @@ namespace DataViz
 
             // --- USE TextMeshPro (3D) INSTEAD OF TextMeshProUGUI ---
             TextMeshPro tmpText = textObj.AddComponent<TextMeshPro>();
-            tmpText.fontSize = 3;
+            tmpText.fontSize = m_AxisLabelFontSize;
+            tmpText.fontStyle = FontStyles.Bold;
             tmpText.alignment = TextAlignmentOptions.Center;
             tmpText.color = Color.white;
+            // One line along the axis: no wrapping, and a rect as long as the axis.
+            tmpText.textWrappingMode = TextWrappingModes.NoWrap;
+            tmpText.rectTransform.sizeDelta = new Vector2(m_AxisLength / 0.03f, 4f);
 
             if (column.IsNumeric)
             {
-                tmpText.text = $"{column.Name}\n[{column.MinValue:F1} to {column.MaxValue:F1}]";
+                tmpText.text = $"{column.Name}  [{column.MinValue:F1} to {column.MaxValue:F1}]";
             }
             else
             {
-                tmpText.text = $"{column.Name}\n[{column.UniqueCount} cats]";
+                tmpText.text = $"{column.Name}  [{column.UniqueCount} cats]";
             }
 
             m_ActiveAxes.Add(labelObj);

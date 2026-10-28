@@ -53,15 +53,44 @@ class ColumnarDatasetProcessor:
         # Return delimiter with highest count
         return max(delimiter_counts, key=delimiter_counts.get)
     
+    def to_numeric_flexible(self, series: pd.Series) -> pd.Series:
+        """Convert to numeric, accepting decimal commas (e.g. '468,5') like CSVImporter.TryParseFlexibleFloat.
+
+        Invariant parse first; entries that fail are retried with ',' replaced by '.'.
+        The retry is skipped when the delimiter is ',' because a comma inside a
+        field is then a (quoted) thousands separator, not a decimal separator.
+        """
+        result = pd.to_numeric(series, errors='coerce')
+        if getattr(self, 'current_delimiter', ',') == ',':
+            return result
+        
+        failed = result.isna() & series.notna()
+        if failed.any():
+            retried = pd.to_numeric(
+                series[failed].astype(str).str.strip().str.replace(',', '.', regex=False),
+                errors='coerce')
+            result = result.copy()
+            result[failed] = retried
+        return result
+    
     def infer_column_type(self, series: pd.Series) -> Tuple[str, float]:
         """Infer if a column is numeric, datetime, or categorical, return type and confidence"""
-        # Try to convert to numeric
-        numeric_series = pd.to_numeric(series, errors='coerce')
+        # Try to convert to numeric (accepts decimal commas for non-comma delimiters)
+        numeric_series = self.to_numeric_flexible(series)
         numeric_ratio = numeric_series.notna().sum() / len(series)
         
         # If 90% or more are numeric, treat as numeric
         if numeric_ratio >= 0.9:
             return "Numeric", numeric_ratio
+        
+        # Number-like strings (e.g. '468,5') must never reach the datetime parser:
+        # pandas/dateutil happily parse them as dates. If the column is mostly
+        # number-like but failed the numeric check, call it Categorical.
+        non_null = series.dropna()
+        if len(non_null) > 0:
+            number_like = non_null.astype(str).str.strip().str.fullmatch(r'[+-]?\d+([.,]\d+)?')
+            if number_like.sum() / len(non_null) >= 0.9:
+                return "Categorical", 1.0 - numeric_ratio
         
         # Otherwise, try datetime before giving up to categorical.
         # Checked second (not first) so a purely numeric column is never
@@ -70,6 +99,7 @@ class ColumnarDatasetProcessor:
         date_ratio = date_series.notna().sum() / len(series)
         
         if date_ratio >= 0.9:
+            print(f"  -> DateTime chosen for '{series.name}' (date_ratio={date_ratio:.2f})")
             return "DateTime", date_ratio
         
         return "Categorical", 1.0 - max(numeric_ratio, date_ratio)
@@ -80,6 +110,7 @@ class ColumnarDatasetProcessor:
         
         # Detect delimiter
         delimiter = self.detect_delimiter(csv_file)
+        self.current_delimiter = delimiter
         print(f"Detected delimiter: '{delimiter}'")
         
         # Read CSV with pandas
@@ -113,7 +144,7 @@ class ColumnarDatasetProcessor:
             
             if col_type == "Numeric":
                 # Convert to numeric, handle errors
-                numeric_series = pd.to_numeric(series, errors='coerce')
+                numeric_series = self.to_numeric_flexible(series)
                 numeric_series = numeric_series.fillna(0.0)  # Replace NaN with 0
                 
                 # Get min/max

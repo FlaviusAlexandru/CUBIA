@@ -164,26 +164,21 @@ namespace DataViz
                 currentTimeStep = Mathf.RoundToInt(targetValue);
             }
 
-            // Value filtering (FilterColumnIndex / FilterLabel): unlike the time filter above,
-            // non-matching rows are NOT skipped - they stay in the buffer at a dimmed alpha so
-            // they visually fade away instead of disappearing. This keeps row counts/indices
-            // stable for GPUPointInteractable and avoids the plot "jumping" as points vanish.
-            // Active as soon as a filter column is chosen: with no value picked (empty FilterLabel,
-            // "Any value" in the UI) a row matches when it has a value in that column at all.
-            int filterCol = m_Manager.FilterColumnIndex;
-            bool filterActive = filterCol >= 0 && filterCol < dataset.ColumnCount;
-            DatasetColumn filterColumn = filterActive ? dataset.Columns[filterCol] : null;
+            // Value filtering (m_Manager.Filters): unlike the time filter above, non-matching
+            // rows are NOT skipped - they stay in the buffer at a dimmed alpha so they visually
+            // fade away instead of disappearing. This keeps row counts/indices stable for
+            // GPUPointInteractable and avoids the plot "jumping" as points vanish.
+            // Each entry with no value picked (empty Label, "Any value" in the UI) matches a row
+            // that has a value in that column at all. Entries combine with OR (see RowPassesFilters).
+            List<ActiveFilter> activeFilters = BuildActiveFilters(dataset);
+            bool filterActive = activeFilters.Count > 0;
 
-            // Snapshot the categorical lookup table once per regenerate rather than per-row.
-            List<string> filterCategoryTable = (filterActive && filterColumn.IsCategorical)
-                ? new List<string>(filterColumn.UniqueValues)
-                : null;
-
-            if (filterActive && !filterColumn.IsCategorical && !filterColumn.IsNumeric)
-            {
-                Debug.LogWarning($"[ScatterplotVisualizer] Filter column '{filterColumn.Name}' is neither " +
-                                  $"categorical nor numeric - filter will not dim any points.");
-            }
+            // Mapped size: per-point size from the size column's normalised value, scaled around
+            // the slider's PointSize. Fixed mode (default) passes no list - identical to before.
+            int sizeCol = m_Manager.SizeColumnIndex;
+            bool sizeMappedActive = m_Manager.SizeMapped && sizeCol >= 0 && sizeCol < dataset.ColumnCount
+                                    && dataset.Columns[sizeCol].IsNumeric;
+            List<float> pointSizes = sizeMappedActive ? new List<float>(dataset.RowCount) : null;
 
             // Glyph column: independent of X/Y/Z (same as colorCol), so users can encode a
             // dimension via shape even when it isn't one of the plotted axes. The actual
@@ -263,11 +258,17 @@ namespace DataViz
                     }
                 }
 
-                // 3. Dim (rather than exclude) rows that don't match the active filter.
+                // 3. Dim (rather than exclude) rows that pass none of the active filters.
                 if (filterActive)
                 {
-                    bool matches = RowMatchesFilter(dataset, i, filterCol, filterColumn, filterCategoryTable, m_Manager.FilterLabel);
+                    bool matches = RowPassesFilters(dataset, i, activeFilters);
                     pointColor.a = matches ? 1f : m_FilteredOutAlpha;
+                }
+
+                // 3b. Mapped size: lerp between min/max scale of the slider size by normalised value.
+                if (sizeMappedActive)
+                {
+                    pointSizes.Add(GetMappedPointSize(dataset, i, sizeCol, pointSize));
                 }
 
                 // 4. Look up this row's manually-assigned glyph on the active glyph column.
@@ -291,8 +292,11 @@ namespace DataViz
                 pointSize,
                 null, // glossiness - not yet exposed as a mapped dimension
                 null, // metallic - not yet exposed as a mapped dimension
-                glyphIndices
+                glyphIndices,
+                pointSizes // null in Fixed size mode -> every point uses pointSize
             );
+
+            LastBuiltPointSizes = pointSizes;
 
             // Also update the interactable with point data
 
@@ -858,6 +862,85 @@ namespace DataViz
         /// (empty filterLabel / "Any value") a row passes when it has a value in the filter
         /// column; with a value picked it must have exactly that value.
         /// </summary>
+        /// <summary>
+        /// Per-point sizes passed to the renderer by the last RegeneratePlot, or null when the
+        /// size mode was Fixed. Exposed for inspection/tests only.
+        /// </summary>
+        public List<float> LastBuiltPointSizes { get; private set; }
+
+        /// <summary>One resolved filter entry, snapshotted once per regenerate.</summary>
+        public class ActiveFilter
+        {
+            public int ColumnIndex;
+            public DatasetColumn Column;
+            public List<string> CategoryTable;
+            public string Label;
+        }
+
+        /// <summary>Resolves m_Manager.Filters against the dataset, skipping out-of-range columns.</summary>
+        public List<ActiveFilter> BuildActiveFilters(DatasetColumnar dataset)
+        {
+            List<ActiveFilter> result = new List<ActiveFilter>();
+            if (m_Manager == null || dataset == null || m_Manager.Filters == null)
+                return result;
+
+            foreach (MultiplayerScatterplotManager.FilterEntry entry in m_Manager.Filters)
+            {
+                if (entry == null || entry.ColumnIndex < 0 || entry.ColumnIndex >= dataset.ColumnCount)
+                    continue;
+
+                DatasetColumn column = dataset.Columns[entry.ColumnIndex];
+                if (!column.IsCategorical && !column.IsNumeric)
+                {
+                    Debug.LogWarning($"[ScatterplotVisualizer] Filter column '{column.Name}' is neither " +
+                                      $"categorical nor numeric - it matches every row.");
+                }
+
+                result.Add(new ActiveFilter
+                {
+                    ColumnIndex = entry.ColumnIndex,
+                    Column = column,
+                    // Snapshot the categorical lookup table once per regenerate rather than per-row.
+                    CategoryTable = column.IsCategorical ? new List<string>(column.UniqueValues) : null,
+                    Label = entry.Label ?? ""
+                });
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// OR over all filters: true when the row passes at least one of them, or when there are
+        /// no filters at all.
+        /// </summary>
+        public bool RowPassesFilters(DatasetColumnar dataset, int rowIndex, List<ActiveFilter> filters)
+        {
+            if (filters == null || filters.Count == 0)
+                return true;
+
+            foreach (ActiveFilter filter in filters)
+            {
+                if (RowMatchesFilter(dataset, rowIndex, filter.ColumnIndex, filter.Column, filter.CategoryTable, filter.Label))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Mapped size for one row: baseSize x lerp(SizeMappedMinScale, SizeMappedMaxScale, normalised
+        /// value), so the column's largest value draws biggest. Rows with no value keep baseSize.
+        /// </summary>
+        public float GetMappedPointSize(DatasetColumnar dataset, int rowIndex, int sizeCol, float baseSize)
+        {
+            if (!dataset.HasValue(rowIndex, sizeCol))
+                return baseSize;
+
+            float norm = dataset.GetNormalizedValue(rowIndex, sizeCol);
+            return baseSize * Mathf.Lerp(MultiplayerScatterplotManager.SizeMappedMinScale,
+                                         MultiplayerScatterplotManager.SizeMappedMaxScale, norm);
+        }
+
         public bool RowMatchesFilter(
             DatasetColumnar dataset,
             int rowIndex,

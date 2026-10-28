@@ -20,6 +20,9 @@ namespace DataViz
         public TMP_Dropdown m_ColorColumnDropdown;
         public Slider m_PointSizeSlider;
         public TextMeshProUGUI m_PointSizeValueText;
+        [Tooltip("Fixed (off, default): every point uses the slider size. Mapped (on): points are scaled " +
+                 "0.25x-1.75x of the slider size by the Size column (set by dropping a label on the Size slot).")]
+        public Toggle m_SizeMappedToggle;
 
         [Header("Temporal Controls")]
         public TMP_Dropdown m_TimeColumnDropdown;
@@ -113,6 +116,9 @@ namespace DataViz
                 m_PointSizeSlider.maxValue = 100f;
                 m_PointSizeSlider.onValueChanged.AddListener(OnPointSizeUIChanged);
             }
+
+            if (m_SizeMappedToggle != null)
+                m_SizeMappedToggle.onValueChanged.AddListener(OnSizeMappedToggleUIChanged);
 
             if (m_TimeColumnDropdown != null)
                 m_TimeColumnDropdown.onValueChanged.AddListener(OnTimeColumnUIChanged);
@@ -349,6 +355,9 @@ namespace DataViz
                 m_PointSizeValueText.text = PointSizeToPercent(m_Manager.PointSize).ToString("F0") + "%";
             }
 
+            if (m_SizeMappedToggle != null)
+                m_SizeMappedToggle.isOn = m_Manager.SizeMapped;
+
             // Sync Time controls
             if (m_TimeColumnDropdown != null)
                 m_TimeColumnDropdown.value = m_Manager.TimeColumnIndex + 1; // +1 due to "None" option
@@ -461,6 +470,12 @@ namespace DataViz
         {
             if (m_IsUpdatingUI || m_Manager == null) return;
             m_Manager.RequestPointSizeRpc(val / 100f * MultiplayerScatterplotManager.MaxPointSize);
+        }
+
+        private void OnSizeMappedToggleUIChanged(bool isOn)
+        {
+            if (m_IsUpdatingUI || m_Manager == null) return;
+            m_Manager.RequestSizeMappedRpc(isOn);
         }
 
         private static float PointSizeToPercent(float size) =>

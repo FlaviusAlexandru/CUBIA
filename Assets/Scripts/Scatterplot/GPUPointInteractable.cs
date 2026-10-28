@@ -357,21 +357,17 @@ namespace DataViz
                 if (colorCol >= 0 && colorCol < dataset.ColumnCount)
                     text += $"<color=#FFFF44>Color ({dataset.Columns[colorCol].Name}):</color> {FormatCell(dataset, row, rowIndex, colorCol)}\n";
 
-                int filterCol = m_Visualizer.m_Manager.FilterColumnIndex;
-                if (filterCol >= 0 && filterCol < dataset.ColumnCount)
+                // One line per active filter (they combine with OR, so a row is dimmed only
+                // when none of them matches).
+                foreach (ScatterplotVisualizer.ActiveFilter filter in m_Visualizer.BuildActiveFilters(dataset))
                 {
-                    DatasetColumn filterColumn = dataset.Columns[filterCol];
-                    List<string> filterCategoryTable = filterColumn.IsCategorical
-                        ? new List<string>(filterColumn.UniqueValues)
-                        : null;
-                    string filterLabel = m_Visualizer.m_Manager.FilterLabel;
-                    bool matches = m_Visualizer.RowMatchesFilter(dataset, rowIndex, filterCol, filterColumn, filterCategoryTable, filterLabel);
+                    bool matches = m_Visualizer.RowMatchesFilter(dataset, rowIndex, filter.ColumnIndex, filter.Column, filter.CategoryTable, filter.Label);
 
                     string matchTag = matches
                         ? " <color=#88FF88>(match)</color>"
-                        : " <color=#888888>(dimmed)</color>";
+                        : " <color=#888888>(no match)</color>";
 
-                    text += $"<color=#FFAA44>Filter ({filterColumn.Name}):</color> {FormatCell(dataset, row, rowIndex, filterCol)}{matchTag}\n";
+                    text += $"<color=#FFAA44>Filter ({filter.Column.Name}):</color> {FormatCell(dataset, row, rowIndex, filter.ColumnIndex)}{matchTag}\n";
                 }
 
                 int glyphCol = m_Visualizer.m_Manager.GlyphColumnIndex;

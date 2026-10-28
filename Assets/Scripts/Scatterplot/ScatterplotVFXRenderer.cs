@@ -75,7 +75,7 @@ namespace DataViz
 
         /// <summary>
         /// Advanced Build method allowing full multidimensional encoding per point.
-        /// Pass null on optional lists to use baseline defaults.
+        /// Pass null on optional lists to use baseline defaults (sizes: null = pointSize for all).
         /// </summary>
         public void BuildAdvanced(
             List<Vector3> positions,
@@ -83,7 +83,8 @@ namespace DataViz
             float pointSize,
             List<float> glossiness = null,
             List<float> metallic = null,
-            List<int> glyphIndices = null)
+            List<int> glyphIndices = null,
+            List<float> sizes = null)
         {
             int count = positions.Count;
             if (count == 0)
@@ -111,7 +112,9 @@ namespace DataViz
                 Color c = (colors != null && i < colors.Count) ? colors[i] : Color.white;
                 dataArray[i].color = new Vector4(c.r, c.g, c.b, c.a);
 
-                dataArray[i].size = pointSize;
+                // Per-point size (mapped size mode) when given, otherwise the uniform slider size.
+                // The graph's Sample Graphics Buffer 'size' field drives the particle size attribute.
+                dataArray[i].size = (sizes != null && i < sizes.Count) ? sizes[i] : pointSize;
                 dataArray[i].glossiness = (glossiness != null && i < glossiness.Count) ? glossiness[i] : 0.5f;
                 dataArray[i].metallic = (metallic != null && i < metallic.Count) ? metallic[i] : 0.0f;
                 dataArray[i].glyphIndex = (glyphIndices != null && i < glyphIndices.Count) ? glyphIndices[i] : 0;

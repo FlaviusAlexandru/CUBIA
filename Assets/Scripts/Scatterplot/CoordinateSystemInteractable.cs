@@ -16,7 +16,7 @@ namespace DataViz
         [Header("References")]
         public ScatterplotVisualizer m_Visualizer;
 
-        [Tooltip("Transform to re-parent to when docking. Leave empty to use whatever parent this object had at Awake.")]
+        [Tooltip("Transform to re-parent to when resetting the plot's position. Leave empty to use whatever parent this object had at Awake.")]
         public Transform m_DockParent;
 
         [Header("Scale Bounds")]
@@ -70,8 +70,10 @@ namespace DataViz
             m_GrabInteractable.trackRotation = true;
             m_GrabInteractable.throwOnDetach = false;
 
-            // Remember the docked transform state so DockToTable() can
-            // restore it exactly.
+            // Remember the starting transform state so ResetPosition() can
+            // restore it exactly. Nothing moves or resizes the plot between
+            // Awake and the first frame (the table/prefab place it), so this
+            // is the true starting pose.
             m_OriginalParent = m_DockParent != null ? m_DockParent : transform.parent;
             m_DockedLocalPosition = transform.localPosition;
             m_DockedLocalRotation = transform.localRotation;
@@ -111,21 +113,41 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Returns the coordinate system to its original docked position,
-        /// rotation, and scale. Safe to call whether or not it's currently
-        /// held (releases from any interactors first if needed via the
-        /// interaction manager, though typically this is wired to a UI
-        /// button pressed while NOT holding it).
+        /// Snaps the coordinate system back to where it started: the parent,
+        /// local position, rotation and scale it had at Awake. If any
+        /// interactor is holding it, that grab is cancelled first through the
+        /// XR interaction manager, so the hand stops driving the transform and
+        /// the plot doesn't jump back to it on the next frame. This is the one
+        /// way to reset the plot (wired to the menu's Reset position button).
         /// </summary>
-        public void DockToTable()
+        public void ResetPosition()
         {
+            ReleaseFromInteractors();
+
             transform.SetParent(m_OriginalParent, false);
             transform.localPosition = m_DockedLocalPosition;
             transform.localRotation = m_DockedLocalRotation;
             transform.localScale = m_DockedLocalScale;
             m_IsDocked = true;
 
-            Debug.Log("[CoordinateSystemInteractable] Docked to table.");
+            Debug.Log("[CoordinateSystemInteractable] Reset to starting position.");
+        }
+
+        private void ReleaseFromInteractors()
+        {
+            if (m_GrabInteractable == null || !m_GrabInteractable.isSelected)
+                return;
+
+            XRInteractionManager manager = m_GrabInteractable.interactionManager;
+            if (manager == null)
+            {
+                Debug.LogWarning("[CoordinateSystemInteractable] Plot is held but has no interaction manager; can't release it before resetting.", this);
+                return;
+            }
+
+            // Cancels every interactor selecting the plot (two-handed grabs
+            // included). XRGrabInteractable.Drop() runs synchronously here.
+            manager.CancelInteractableSelection((IXRSelectInteractable)m_GrabInteractable);
         }
 
         /// <summary>
@@ -137,11 +159,6 @@ namespace DataViz
         {
             float clamped = Mathf.Clamp(scaleMultiplier, m_MinScale, m_MaxScale);
             transform.localScale = m_DockedLocalScale * clamped;
-        }
-
-        public void ResetScale()
-        {
-            transform.localScale = m_DockedLocalScale;
         }
     }
 }

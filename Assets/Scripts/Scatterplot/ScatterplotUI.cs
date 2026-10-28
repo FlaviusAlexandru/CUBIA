@@ -45,6 +45,11 @@ namespace DataViz
         public Button m_ShuffleBackwardButton;
         public Button m_ShuffleForwardButton;
 
+        [Header("Plot Position Controls")]
+        public Button m_ResetPositionButton;
+        [Tooltip("Plot that Reset position snaps back. Leave empty to use the scene's CoordinateSystemInteractable.")]
+        public CoordinateSystemInteractable m_CoordinateSystemInteractable;
+
         [Header("Shuffle Blacklist Controls")]
         [Tooltip("Minimal picker for now: pick a column, then toggle whether shuffle can land on it. " +
                  "A proper list-management view (showing all blacklisted columns at once) can replace " +
@@ -132,6 +137,12 @@ namespace DataViz
 
             if (m_ShuffleForwardButton != null)
                 m_ShuffleForwardButton.onClick.AddListener(OnShuffleForwardButtonClicked);
+
+            if (m_CoordinateSystemInteractable == null)
+                m_CoordinateSystemInteractable = FindAnyObjectByType<CoordinateSystemInteractable>();
+
+            if (m_ResetPositionButton != null)
+                m_ResetPositionButton.onClick.AddListener(OnResetPositionButtonClicked);
 
             if (m_BlacklistColumnDropdown != null)
                 m_BlacklistColumnDropdown.onValueChanged.AddListener(OnBlacklistColumnUIChanged);
@@ -484,6 +495,12 @@ namespace DataViz
         {
             if (m_Manager == null) return;
             m_Manager.RequestShuffleForwardRpc();
+        }
+
+        private void OnResetPositionButtonClicked()
+        {
+            if (m_CoordinateSystemInteractable == null) return;
+            m_CoordinateSystemInteractable.ResetPosition();
         }
 
         private void OnBlacklistColumnUIChanged(int idx)

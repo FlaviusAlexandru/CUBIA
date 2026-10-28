@@ -67,6 +67,7 @@ public static class NewUISetup
 
         new ControlSpec { Key = "ColorColumnDropdown",     PanelKey = "PointControlPanelBackground",        Type = RowType.Dropdown, Label = "Color",           ScatterplotUIFieldName = "m_ColorColumnDropdown",     WristDefaultEnabled = true },
         new ControlSpec { Key = "PointSizeSlider",         PanelKey = "PointControlPanelBackground",        Type = RowType.Slider,   Label = "Point Size",      ScatterplotUIFieldName = "m_PointSizeSlider",         WristDefaultEnabled = true },
+        new ControlSpec { Key = "ResetPositionButton",     PanelKey = "PointControlPanelBackground",        Type = RowType.Button,   Label = "Reset position",  ScatterplotUIFieldName = "m_ResetPositionButton",     WristDefaultEnabled = true, LabelOnButton = true },
 
         new ControlSpec { Key = "TimeColumnDropdown",      PanelKey = "TimeControlsPanelBackground",        Type = RowType.Dropdown, Label = "Time Column",     ScatterplotUIFieldName = "m_TimeColumnDropdown",      WristDefaultEnabled = true },
         new ControlSpec { Key = "TimeScrubSlider",         PanelKey = "TimeControlsPanelBackground",        Type = RowType.Slider,   Label = "Time Scrub",      ScatterplotUIFieldName = "m_TimeScrubSlider",         WristDefaultEnabled = true },

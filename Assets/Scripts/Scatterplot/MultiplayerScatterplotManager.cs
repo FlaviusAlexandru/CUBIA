@@ -66,8 +66,11 @@ namespace DataViz
         /// </summary>
         private Dictionary<string, HashSet<string>> m_BlacklistByDataset = new();
 
-        // Bookmarks: per-dataset set of bookmarked column names.
-        private Dictionary<string, HashSet<string>> m_BookmarksByDataset = new();
+        // Bookmarks: per-dataset list of bookmarked column names, in the order they were
+        // bookmarked (the bookmark palette shows its blocks in this order). A List rather than
+        // a HashSet so the order survives; RequestSetColumnBookmarkedRpc keeps it duplicate-free.
+        // Persisted as the same BookmarkedColumns JSON list as before, so old files still load.
+        private Dictionary<string, List<string>> m_BookmarksByDataset = new();
 
         [Serializable]
         private class DatasetColumnPrefs
@@ -164,7 +167,13 @@ namespace DataViz
 
                 foreach (DatasetBookmarkPrefs entry in data.Datasets)
                 {
-                    m_BookmarksByDataset[entry.DatasetName] = new HashSet<string>(entry.BookmarkedColumns);
+                    List<string> ordered = new List<string>();
+                    foreach (string columnName in entry.BookmarkedColumns)
+                    {
+                        if (!string.IsNullOrEmpty(columnName) && !ordered.Contains(columnName))
+                            ordered.Add(columnName);
+                    }
+                    m_BookmarksByDataset[entry.DatasetName] = ordered;
                 }
             }
             catch (Exception e)
@@ -179,7 +188,7 @@ namespace DataViz
             {
                 BookmarkPrefsFile data = new BookmarkPrefsFile();
 
-                foreach (KeyValuePair<string, HashSet<string>> kvp in m_BookmarksByDataset)
+                foreach (KeyValuePair<string, List<string>> kvp in m_BookmarksByDataset)
                 {
                     if (kvp.Value.Count == 0)
                         continue;
@@ -215,33 +224,60 @@ namespace DataViz
             return set;
         }
 
-        private HashSet<string> GetBookmarksForCurrentDataset()
+        private List<string> GetBookmarksForCurrentDataset()
         {
             if (LoadedDataset == null)
-                return new HashSet<string>();
+                return new List<string>();
 
             string key = LoadedDataset.Name;
 
-            if (!m_BookmarksByDataset.TryGetValue(key, out HashSet<string> set))
+            if (!m_BookmarksByDataset.TryGetValue(key, out List<string> list))
             {
-                set = new HashSet<string>();
-                m_BookmarksByDataset[key] = set;
+                list = new List<string>();
+                m_BookmarksByDataset[key] = list;
             }
 
-            return set;
+            return list;
         }
 
         //<summary>
         // Filtering will be used to chose a subset of the data to be displayed. Users will be able to chose a column "Filter label" and index/value "Filter Value"
         //to enable, for example, filtering by participant ID or a specific category.
         //This will help make the datasets less overwhelming and more manageable for users to explore.
-        //Filtering is active whenever FilterColumnIndex >= 0. An empty FilterLabel ("Any value" in
-        //the UI) keeps every row that HAS a value in that column; a non-empty FilterLabel keeps only
-        //rows with exactly that value. Everything else is dimmed by ScatterplotVisualizer.
+        //Filtering is a list of FilterEntry (column + optional value). An entry with an empty Label
+        //("Any value" in the UI) keeps every row that HAS a value in that column; a non-empty Label
+        //keeps only rows with exactly that value. Several entries combine with OR: a row is shown at
+        //full alpha when it passes at least one entry. No entries = no filtering. Everything else is
+        //dimmed by ScatterplotVisualizer.
+        //FilterColumnIndex/FilterLabel are the FIRST entry, kept for the existing Filter Column /
+        //Filter Value dropdowns (which edit that first entry). The bookmark palette's Filter slot
+        //appends entries via RequestAddFilterColumnRpc.
         //</summary>
+        [Serializable]
+        public class FilterEntry
+        {
+            public int ColumnIndex = -1;
+            public string Label = "";
+        }
+
         [Header("Filtering Settings")]
-        public int FilterColumnIndex = -1;
-        public string FilterLabel = "";
+        public List<FilterEntry> Filters = new();
+
+        public int FilterColumnIndex => Filters.Count > 0 ? Filters[0].ColumnIndex : -1;
+        public string FilterLabel => Filters.Count > 0 ? (Filters[0].Label ?? "") : "";
+
+        //<summary>
+        // Size encoding. Fixed (default, SizeMapped == false): every point uses PointSize, exactly as
+        // before. Mapped: each point is scaled by its normalised value in SizeColumnIndex, from
+        // SizeMappedMinScale x PointSize (column minimum) to SizeMappedMaxScale x PointSize (maximum),
+        // so the point-size slider still sets the overall size. Rows with no value in the size
+        // column, or no size column chosen, keep PointSize.
+        //</summary>
+        [Header("Size Settings")]
+        public bool SizeMapped = false;
+        public int SizeColumnIndex = -1;
+        public const float SizeMappedMinScale = 0.25f;
+        public const float SizeMappedMaxScale = 1.75f;
 
         //<summary>
         // Glyphs let users manually assign a specific shape/mesh to a label value on a chosen
@@ -337,6 +373,12 @@ namespace DataViz
         public event Action OnDatasetLoaded;
         public event Action OnPlotSettingsChanged;
 
+        /// <summary>
+        /// Raised when the bookmarked columns change: a bookmark added/removed, or a dataset
+        /// loaded (each dataset has its own bookmarks). Read GetBookmarkedColumns() for the list.
+        /// </summary>
+        public event Action OnBookmarksChanged;
+
         private void Awake()
         {
             if (Instance == null)
@@ -429,6 +471,7 @@ namespace DataViz
                 );
 
                 OnDatasetLoaded?.Invoke();
+                OnBookmarksChanged?.Invoke();
                 OnPlotSettingsChanged?.Invoke();
             }
             else
@@ -459,6 +502,7 @@ namespace DataViz
                     );
 
                     OnDatasetLoaded?.Invoke();
+                    OnBookmarksChanged?.Invoke();
                     OnPlotSettingsChanged?.Invoke();
                 }
                 else
@@ -546,10 +590,10 @@ namespace DataViz
                 IsPlaying = false;
                 GlyphColumnIndex = -1;
                 GlyphAssignments.Clear();
-                // A filter column index from the previous dataset would point at an unrelated
-                // column here (and filtering is now active for any column >= 0), so reset it.
-                FilterColumnIndex = -1;
-                FilterLabel = "";
+                // Filter/size column indices from the previous dataset would point at unrelated
+                // columns here (and filtering is active for any entry), so reset them.
+                Filters.Clear();
+                SizeColumnIndex = -1;
 
                 OnPlotSettingsChanged?.Invoke();
             }
@@ -619,20 +663,84 @@ namespace DataViz
             //OnPlotSettingsChanged?.Invoke();
         }
 
+        /// <summary>
+        /// Dropdown path: sets the column of the FIRST filter entry (creating it if there is none).
+        /// columnIndex &lt; 0 ("None") removes the first entry; any further entries stay active.
+        /// </summary>
         public void RequestFilterIndexRpc(int columnIndex)
         {
-            // A value picked for the old column means nothing for the new one:
-            // fall back to "Any value" (empty FilterLabel).
-            if (columnIndex != FilterColumnIndex)
-                FilterLabel = "";
+            if (columnIndex < 0)
+            {
+                if (Filters.Count > 0)
+                    Filters.RemoveAt(0);
+            }
+            else if (Filters.Count == 0)
+            {
+                Filters.Add(new FilterEntry { ColumnIndex = columnIndex, Label = "" });
+            }
+            else if (Filters[0].ColumnIndex != columnIndex)
+            {
+                // A value picked for the old column means nothing for the new one:
+                // fall back to "Any value" (empty Label).
+                Filters[0].ColumnIndex = columnIndex;
+                Filters[0].Label = "";
+            }
 
-            FilterColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
 
+        /// <summary>Dropdown path: sets the value of the FIRST filter entry (no-op without one).</summary>
         public void RequestFilterLabelRpc(string filterLabel)
         {
-            FilterLabel = filterLabel;
+            if (Filters.Count == 0)
+                return;
+
+            Filters[0].Label = filterLabel ?? "";
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Palette path: appends a filter entry for a column (OR-combined with the others).
+        /// An identical entry (same column and value) is not added twice. Returns true when added.
+        /// </summary>
+        public bool RequestAddFilterColumnRpc(int columnIndex, string filterLabel = "")
+        {
+            if (LoadedDataset == null || columnIndex < 0 || columnIndex >= LoadedDataset.ColumnCount)
+                return false;
+
+            filterLabel ??= "";
+            if (Filters.Exists(f => f.ColumnIndex == columnIndex && f.Label == filterLabel))
+                return false;
+
+            Filters.Add(new FilterEntry { ColumnIndex = columnIndex, Label = filterLabel });
+            OnPlotSettingsChanged?.Invoke();
+            return true;
+        }
+
+        public void RequestRemoveFilterRpc(int filterIndex)
+        {
+            if (filterIndex < 0 || filterIndex >= Filters.Count)
+                return;
+
+            Filters.RemoveAt(filterIndex);
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        public void RequestClearFiltersRpc()
+        {
+            Filters.Clear();
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        public void RequestSizeColumnRpc(int columnIndex)
+        {
+            SizeColumnIndex = columnIndex;
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        public void RequestSizeMappedRpc(bool mapped)
+        {
+            SizeMapped = mapped;
             OnPlotSettingsChanged?.Invoke();
         }
 
@@ -735,11 +843,12 @@ namespace DataViz
             if (string.IsNullOrEmpty(columnName))
                 return;
 
-            HashSet<string> bookmarks = GetBookmarksForCurrentDataset();
+            List<string> bookmarks = GetBookmarksForCurrentDataset();
 
             if (bookmarked)
             {
-                bookmarks.Add(columnName);
+                if (!bookmarks.Contains(columnName))
+                    bookmarks.Add(columnName); // appended: palette order = bookmark order
             }
             else
             {
@@ -747,7 +856,27 @@ namespace DataViz
             }
 
             SaveBookmarkPrefs();
+            OnBookmarksChanged?.Invoke();
             OnPlotSettingsChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// The current dataset's bookmarked column names, in bookmark order. Only names that
+        /// exist in the loaded dataset are returned (a bookmark file can outlive a column).
+        /// </summary>
+        public List<string> GetBookmarkedColumns()
+        {
+            List<string> result = new List<string>();
+            if (LoadedDataset == null)
+                return result;
+
+            foreach (string columnName in GetBookmarksForCurrentDataset())
+            {
+                if (LoadedDataset.ColumnMapping.ContainsKey(columnName))
+                    result.Add(columnName);
+            }
+
+            return result;
         }
 
         public bool IsColumnBookmarked(string columnName)

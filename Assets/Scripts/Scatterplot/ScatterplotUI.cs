@@ -34,10 +34,8 @@ namespace DataViz
         [Header("Interaction Controls")]
         public Toggle m_TooltipsToggle;
 
-        [Header("Axis Lock Controls")]
-        public Toggle m_XAxisLockToggle;
-        public Toggle m_YAxisLockToggle;
-        public Toggle m_ZAxisLockToggle;
+        // Shuffle lock toggles (X/Y/Z and the other shuffled fields) live in ShuffleLockPanel,
+        // the Preferences panel's Shuffle section.
 
         [Header("Bookmark Controls")]
         public TMP_Dropdown m_BookmarkColumnDropdown;
@@ -131,11 +129,6 @@ namespace DataViz
 
             if (m_TooltipsToggle != null)
                 m_TooltipsToggle.onValueChanged.AddListener(OnTooltipsToggleUIChanged);
-
-            // Axis lock toggles
-            if (m_XAxisLockToggle != null) m_XAxisLockToggle.onValueChanged.AddListener(isOn => OnAxisLockUIChanged(0, isOn));
-            if (m_YAxisLockToggle != null) m_YAxisLockToggle.onValueChanged.AddListener(isOn => OnAxisLockUIChanged(1, isOn));
-            if (m_ZAxisLockToggle != null) m_ZAxisLockToggle.onValueChanged.AddListener(isOn => OnAxisLockUIChanged(2, isOn));
 
             // Bookmark controls
             if (m_BookmarkColumnDropdown != null)
@@ -375,11 +368,6 @@ namespace DataViz
             if (m_TooltipsToggle != null)
                 m_TooltipsToggle.isOn = m_Manager.ShowTooltips;
 
-            // Sync axis lock toggles
-            if (m_XAxisLockToggle != null) m_XAxisLockToggle.isOn = m_Manager.XAxisLocked;
-            if (m_YAxisLockToggle != null) m_YAxisLockToggle.isOn = m_Manager.YAxisLocked;
-            if (m_ZAxisLockToggle != null) m_ZAxisLockToggle.isOn = m_Manager.ZAxisLocked;
-
             // Sync bookmark toggle selection
             RefreshBookmarkToggleSelection();
 
@@ -544,12 +532,6 @@ namespace DataViz
 
             string selectedColumn = m_BlacklistColumnDropdown.options[m_BlacklistColumnDropdown.value].text;
             m_Manager.RequestSetColumnBlacklistedRpc(selectedColumn, isOn);
-        }
-
-        private void OnAxisLockUIChanged(int axis, bool isOn)
-        {
-            if (m_IsUpdatingUI || m_Manager == null) return;
-            m_Manager.RequestSetAxisLockedRpc(axis, isOn);
         }
 
         private void OnBookmarkColumnUIChanged(int idx) => RefreshBookmarkToggleSelection();

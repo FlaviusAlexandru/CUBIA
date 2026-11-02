@@ -55,9 +55,8 @@ public static class NewUISetup
         new ControlSpec { Key = "xDropDown",               PanelKey = "AxisControlPanelBackground",         Type = RowType.Dropdown, Label = "X Axis",          ScatterplotUIFieldName = "m_XColumnDropdown",         WristDefaultEnabled = true },
         new ControlSpec { Key = "yDropDown",               PanelKey = "AxisControlPanelBackground",         Type = RowType.Dropdown, Label = "Y Axis",          ScatterplotUIFieldName = "m_YColumnDropdown",         WristDefaultEnabled = true },
         new ControlSpec { Key = "zDropDown",               PanelKey = "AxisControlPanelBackground",         Type = RowType.Dropdown, Label = "Z Axis",          ScatterplotUIFieldName = "m_ZColumnDropdown",         WristDefaultEnabled = true },
-        new ControlSpec { Key = "XAxisLockToggle",         PanelKey = "AxisControlPanelBackground",         Type = RowType.Toggle,   Label = "Lock X",          ScatterplotUIFieldName = "m_XAxisLockToggle",         WristDefaultEnabled = false },
-        new ControlSpec { Key = "YAxisLockToggle",         PanelKey = "AxisControlPanelBackground",         Type = RowType.Toggle,   Label = "Lock Y",          ScatterplotUIFieldName = "m_YAxisLockToggle",         WristDefaultEnabled = false },
-        new ControlSpec { Key = "ZAxisLockToggle",         PanelKey = "AxisControlPanelBackground",         Type = RowType.Toggle,   Label = "Lock Z",          ScatterplotUIFieldName = "m_ZAxisLockToggle",         WristDefaultEnabled = false },
+        // The X/Y/Z shuffle locks moved to the Preferences panel's Shuffle section (ShuffleLockPanel,
+        // hand-placed on SummonedMenuCanvas, no wrist copy), so they are no longer rows built here.
 
         new ControlSpec { Key = "DatasetDropdown",         PanelKey = "DatasetControlPanelBackground",      Type = RowType.Dropdown, Label = "Dataset",         ScatterplotUIFieldName = "m_DatasetDropdown",         WristDefaultEnabled = true },
         new ControlSpec { Key = "TooltipsToggle",          PanelKey = "DatasetControlPanelBackground",      Type = RowType.Toggle,   Label = "Tooltips",        ScatterplotUIFieldName = "m_TooltipsToggle",          WristDefaultEnabled = true },

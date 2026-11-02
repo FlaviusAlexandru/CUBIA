@@ -201,14 +201,18 @@ namespace DataViz
             // Glyph column: independent of X/Y/Z (same as colorCol), so users can encode a
             // dimension via shape even when it isn't one of the plotted axes. The actual
             // shape per label is a manual mapping (m_Manager.GlyphAssignments), looked up
-            // per row below: the value's own assignment, else glyph 0. Rows with no value in
-            // the column always get glyph 0.
+            // per row below (GetRowGlyph): the value's own assignment, else the glyph range its
+            // value falls in, else glyph 0. Rows with no value in the column always get glyph 0.
             int glyphCol = m_Manager.GlyphColumnIndex;
             bool glyphActive = glyphCol >= 0 && glyphCol < dataset.ColumnCount;
             DatasetColumn glyphColumn = glyphActive ? dataset.Columns[glyphCol] : null;
             List<string> glyphCategoryTable = (glyphActive && glyphColumn.IsCategorical)
                 ? new List<string>(glyphColumn.UniqueValues)
                 : null;
+
+            // Glyph range editor preview: while its draft ranges overlap, points whose glyph
+            // value lies inside an overlap are hidden (alpha 0). Nothing is committed.
+            bool glyphPreviewHideActive = glyphActive && glyphColumn.IsNumeric && m_GlyphPreviewHiddenIntervals.Count > 0;
 
             if (colorColumn != null)
             {
@@ -283,6 +287,13 @@ namespace DataViz
                     pointColor.a = matches ? 1f : m_FilteredOutAlpha;
                 }
 
+                // 3a. Glyph range preview: hide points inside an overlap of the draft ranges.
+                if (glyphPreviewHideActive && dataset.HasValue(i, glyphCol)
+                    && IsInGlyphPreviewHiddenInterval(dataset.GetNumericValue(i, glyphCol)))
+                {
+                    pointColor.a = 0f;
+                }
+
                 // 3b. Mapped size: lerp between min/max scale of the slider size by normalised value.
                 if (sizeMappedActive)
                 {
@@ -293,8 +304,7 @@ namespace DataViz
                 int glyphIndex = 0;
                 if (glyphActive)
                 {
-                    string rowLabel = GetRowLabel(dataset, i, glyphCol, glyphColumn, glyphCategoryTable);
-                    glyphIndex = m_Manager.GetGlyphForRow(rowLabel, dataset.HasValue(i, glyphCol), 0);
+                    glyphIndex = GetRowGlyph(dataset, i, glyphCol, glyphColumn, glyphCategoryTable);
                 }
                 glyphIndices.Add(glyphIndex);
 
@@ -315,6 +325,9 @@ namespace DataViz
             );
 
             LastBuiltPointSizes = pointSizes;
+            LastBuiltGlyphIndices = glyphIndices;
+            LastBuiltRowIndices = visibleRowIndices;
+            LastBuiltColors = colors;
 
             // Also update the interactable with point data
 
@@ -899,6 +912,72 @@ namespace DataViz
         /// size mode was Fixed. Exposed for inspection/tests only.
         /// </summary>
         public List<float> LastBuiltPointSizes { get; private set; }
+
+        /// <summary>
+        /// Glyph index, dataset row and colour of each point passed to the renderer by the last
+        /// RegeneratePlot, in buffer order. Exposed for inspection/tests only.
+        /// </summary>
+        public List<int> LastBuiltGlyphIndices { get; private set; }
+        public List<int> LastBuiltRowIndices { get; private set; }
+        public List<Color> LastBuiltColors { get; private set; }
+
+        /// <summary>
+        /// Glyph for dataset row rowIndex on the glyph column: per-value assignment, else the
+        /// glyph range its numeric value falls in, else glyph 0 (see
+        /// MultiplayerScatterplotManager.GetGlyphForRow). Shared with GPUPointInteractable's tooltip.
+        /// </summary>
+        public int GetRowGlyph(
+            DatasetColumnar dataset,
+            int rowIndex,
+            int glyphCol,
+            DatasetColumn glyphColumn,
+            List<string> categoryTable)
+        {
+            bool hasValue = dataset.HasValue(rowIndex, glyphCol);
+            string label = GetRowLabel(dataset, rowIndex, glyphCol, glyphColumn, categoryTable);
+            float numericValue = (hasValue && glyphColumn.IsNumeric)
+                ? dataset.GetNumericValue(rowIndex, glyphCol)
+                : float.NaN;
+            return m_Manager.GetGlyphForRow(label, hasValue, numericValue, 0);
+        }
+
+        // Glyph-column value intervals (x = low, y = high, both inclusive) hidden by the glyph
+        // range editor's overlap preview. Empty = no preview.
+        private readonly List<Vector2> m_GlyphPreviewHiddenIntervals = new();
+
+        public IReadOnlyList<Vector2> GlyphPreviewHiddenIntervals => m_GlyphPreviewHiddenIntervals;
+
+        /// <summary>
+        /// Preview hook for the glyph range editor: hides (alpha 0) the points whose glyph-column
+        /// value lies in any of intervals, without committing anything. Null or empty shows them
+        /// again. Rebuilds the plot only when the intervals actually change.
+        /// </summary>
+        public void SetGlyphPreviewHiddenIntervals(List<Vector2> intervals)
+        {
+            int count = intervals != null ? intervals.Count : 0;
+            bool same = count == m_GlyphPreviewHiddenIntervals.Count;
+            for (int i = 0; same && i < count; i++)
+                same = intervals[i] == m_GlyphPreviewHiddenIntervals[i];
+            if (same)
+                return;
+
+            m_GlyphPreviewHiddenIntervals.Clear();
+            if (intervals != null)
+                m_GlyphPreviewHiddenIntervals.AddRange(intervals);
+
+            if (m_PointsContainer != null) // Start has run
+                RegeneratePlot();
+        }
+
+        private bool IsInGlyphPreviewHiddenInterval(float value)
+        {
+            foreach (Vector2 interval in m_GlyphPreviewHiddenIntervals)
+            {
+                if (value >= interval.x && value <= interval.y)
+                    return true;
+            }
+            return false;
+        }
 
         /// <summary>One resolved filter entry, snapshotted once per regenerate.</summary>
         public class ActiveFilter

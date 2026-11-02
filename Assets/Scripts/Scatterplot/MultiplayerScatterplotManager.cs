@@ -534,6 +534,27 @@ namespace DataViz
             public int GlyphIndex;
         }
 
+        //<summary>
+        // Glyph ranges, for numeric and DateTime glyph columns: every row whose value lies in
+        // [min, max] of a range draws with that range's glyph. Kept sorted by min and never
+        // overlapping; two ranges may share one edge value, which then belongs to the lower range.
+        // Each assignable shape (every k_GlyphShapeNames entry except the default Circle) is used
+        // by at most one range, so there are at most MaxGlyphRanges. A per-value GlyphAssignment
+        // overrides a range for that exact value; rows outside every range, or with no value,
+        // keep the default glyph. Cleared when the glyph column changes or a dataset loads.
+        // Set only through RequestSetGlyphRangesRpc, which validates the whole list.
+        //</summary>
+        public List<GlyphRange> GlyphRanges = new();
+        public const int MaxGlyphRanges = 5;
+
+        [System.Serializable]
+        public class GlyphRange
+        {
+            public int glyphIndex;
+            public float min;
+            public float max;
+        }
+
         [Header("Loaded Dataset")]
         public DatasetColumnar LoadedDataset;
 
@@ -605,6 +626,8 @@ namespace DataViz
             ZColumnIndex = state.Z;
             SizeColumnIndex = state.Size;
             ColorColumnIndex = state.Colour;
+            if (GlyphColumnIndex != state.Glyph)
+                GlyphRanges.Clear(); // ranges are values of the old glyph column
             GlyphColumnIndex = state.Glyph;
             TimeColumnIndex = state.Time;
 
@@ -876,6 +899,7 @@ namespace DataViz
                 IsPlaying = false;
                 GlyphColumnIndex = -1;
                 GlyphAssignments.Clear();
+                GlyphRanges.Clear();
                 // Filter/size column indices from the previous dataset would point at unrelated
                 // columns here (and filtering is active for any entry), so reset them.
                 Filters.Clear();
@@ -1032,6 +1056,10 @@ namespace DataViz
 
         public void RequestGlyphColumnRpc(int columnIndex)
         {
+            // Ranges are values of the old glyph column: a new label starts with none.
+            if (columnIndex != GlyphColumnIndex)
+                GlyphRanges.Clear();
+
             GlyphColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
@@ -1073,14 +1101,146 @@ namespace DataViz
 
         /// <summary>
         /// Glyph for one row of the glyph column: its value's own assignment if it has one,
-        /// otherwise defaultGlyph. Rows with no value (hasValue false) always get defaultGlyph.
+        /// otherwise the glyph of the range its numeric value falls in (pass NaN for a
+        /// categorical column), otherwise defaultGlyph. Rows with no value (hasValue false)
+        /// always get defaultGlyph.
         /// </summary>
-        public int GetGlyphForRow(string label, bool hasValue, int defaultGlyph = 0)
+        public int GetGlyphForRow(string label, bool hasValue, float numericValue, int defaultGlyph = 0)
         {
             if (!hasValue)
                 return defaultGlyph;
 
-            return GetGlyphForLabel(label, defaultGlyph);
+            GlyphAssignment match = string.IsNullOrEmpty(label)
+                ? null
+                : GlyphAssignments.Find(a => a.Label == label);
+            if (match != null)
+                return match.GlyphIndex;
+
+            int rangeIndex = GetGlyphRangeIndex(numericValue);
+            return rangeIndex >= 0 ? GlyphRanges[rangeIndex].glyphIndex : defaultGlyph;
+        }
+
+        /// <summary>
+        /// Index in GlyphRanges of the range containing value (min and max inclusive), or -1.
+        /// GlyphRanges is sorted by min, so a value on an edge two ranges share resolves to
+        /// the lower range.
+        /// </summary>
+        public int GetGlyphRangeIndex(float value)
+        {
+            if (float.IsNaN(value))
+                return -1;
+
+            for (int i = 0; i < GlyphRanges.Count; i++)
+            {
+                if (value >= GlyphRanges[i].min && value <= GlyphRanges[i].max)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Replaces every glyph range with ranges (null or empty clears them). Rejected, with
+        /// nothing changed, when ValidateGlyphRanges fails: overlapping ranges, a shape used
+        /// twice, the default Circle or an unknown shape, min > max, or more than
+        /// MaxGlyphRanges ranges. Returns whether the ranges were applied.
+        /// </summary>
+        public bool RequestSetGlyphRangesRpc(List<GlyphRange> ranges)
+        {
+            if (!ValidateGlyphRanges(ranges, out string error))
+            {
+                Debug.LogWarning($"[MultiplayerScatterplotManager] Glyph ranges rejected: {error}");
+                return false;
+            }
+
+            GlyphRanges = new List<GlyphRange>();
+            if (ranges != null)
+            {
+                foreach (GlyphRange range in ranges)
+                    GlyphRanges.Add(new GlyphRange { glyphIndex = range.glyphIndex, min = range.min, max = range.max });
+            }
+            GlyphRanges.Sort(CompareGlyphRanges);
+
+            OnPlotSettingsChanged?.Invoke();
+            return true;
+        }
+
+        /// <summary>Orders ranges by min, then max.</summary>
+        public static int CompareGlyphRanges(GlyphRange a, GlyphRange b)
+        {
+            int byMin = a.min.CompareTo(b.min);
+            return byMin != 0 ? byMin : a.max.CompareTo(b.max);
+        }
+
+        /// <summary>
+        /// True when two ranges share more than one edge value. Ranges that only touch
+        /// (a.max == b.min) do not overlap; two identical ranges always do.
+        /// </summary>
+        public static bool GlyphRangesOverlap(GlyphRange a, GlyphRange b)
+        {
+            if (a.min == b.min && a.max == b.max)
+                return true;
+
+            return a.min < b.max && b.min < a.max;
+        }
+
+        /// <summary>Checks a full list of glyph ranges against the rules on GlyphRanges.</summary>
+        public static bool ValidateGlyphRanges(List<GlyphRange> ranges, out string error)
+        {
+            error = null;
+            if (ranges == null || ranges.Count == 0)
+                return true;
+
+            if (ranges.Count > MaxGlyphRanges)
+            {
+                error = $"{ranges.Count} ranges, at most {MaxGlyphRanges} allowed";
+                return false;
+            }
+
+            HashSet<int> usedGlyphs = new HashSet<int>();
+            for (int i = 0; i < ranges.Count; i++)
+            {
+                GlyphRange range = ranges[i];
+                if (range == null)
+                {
+                    error = $"range {i} is null";
+                    return false;
+                }
+                if (range.glyphIndex < 1 || range.glyphIndex >= ScatterplotUI.k_GlyphShapeNames.Length)
+                {
+                    error = $"range {i} uses glyph {range.glyphIndex}, which cannot be assigned to a range";
+                    return false;
+                }
+                if (float.IsNaN(range.min) || float.IsNaN(range.max) || float.IsInfinity(range.min) || float.IsInfinity(range.max))
+                {
+                    error = $"range {i} has a non-finite bound";
+                    return false;
+                }
+                if (range.min > range.max)
+                {
+                    error = $"range {i} has min {range.min} above max {range.max}";
+                    return false;
+                }
+                if (!usedGlyphs.Add(range.glyphIndex))
+                {
+                    error = $"glyph {ScatterplotUI.k_GlyphShapeNames[range.glyphIndex]} is used by more than one range";
+                    return false;
+                }
+            }
+
+            for (int i = 0; i < ranges.Count; i++)
+            {
+                for (int j = i + 1; j < ranges.Count; j++)
+                {
+                    if (GlyphRangesOverlap(ranges[i], ranges[j]))
+                    {
+                        error = $"ranges {i} and {j} overlap";
+                        return false;
+                    }
+                }
+            }
+
+            return true;
         }
 
 

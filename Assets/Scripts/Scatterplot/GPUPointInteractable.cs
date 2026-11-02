@@ -377,8 +377,7 @@ namespace DataViz
                     List<string> glyphCategoryTable = glyphColumn.IsCategorical
                         ? new List<string>(glyphColumn.UniqueValues)
                         : null;
-                    string rowGlyphLabel = m_Visualizer.GetRowLabel(dataset, rowIndex, glyphCol, glyphColumn, glyphCategoryTable);
-                    int glyphIndex = m_Visualizer.m_Manager.GetGlyphForRow(rowGlyphLabel, dataset.HasValue(rowIndex, glyphCol), 0);
+                    int glyphIndex = m_Visualizer.GetRowGlyph(dataset, rowIndex, glyphCol, glyphColumn, glyphCategoryTable);
 
                     string glyphName = (glyphIndex >= 0 && glyphIndex < ScatterplotUI.k_GlyphShapeNames.Length)
                         ? ScatterplotUI.k_GlyphShapeNames[glyphIndex]

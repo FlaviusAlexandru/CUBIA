@@ -30,30 +30,254 @@ namespace DataViz
         [Header("Interaction Settings")]
         public bool ShowTooltips = false;
 
-        [Header("Axis Lock Settings")]
-        public bool XAxisLocked = false;
-        public bool YAxisLocked = false;
-        public bool ZAxisLocked = false;
+        //<summary>
+        // Shuffle locks. Every field Shuffle can change (ShuffleLocks.ShuffleOrder: X, Y, Z, Size,
+        // Colour, Glyph, Time) is Locked or Unlocked; Shuffle only re-picks unlocked fields. Locks
+        // affect Shuffle and nothing else. They are stored PER DATASET and persisted to disk next
+        // to the blacklist and bookmarks (scatterplot_shuffle_lock_prefs.json). Defaults: X/Y/Z
+        // unlocked, everything else locked (ShuffleLocks.DefaultLocked). Size can only be unlocked
+        // while SizeMapped is on; while Fixed it always counts as locked.
+        // XAxisLocked/YAxisLocked/ZAxisLocked, RequestSetAxisLockedRpc and IsAxisLocked are thin
+        // wrappers over the X/Y/Z locks, so existing callers keep working.
+        //</summary>
+        private readonly Dictionary<string, Dictionary<MappingTarget, bool>> m_ShuffleLocksByDataset = new();
+
+        // Used while no dataset is loaded, so lock calls never touch a real dataset's entry.
+        private readonly Dictionary<MappingTarget, bool> m_NoDatasetShuffleLocks = ShuffleLocks.CreateDefaults();
+
+        public bool XAxisLocked
+        {
+            get => IsFieldLocked(MappingTarget.X);
+            set => RequestSetFieldLockedRpc(MappingTarget.X, value);
+        }
+
+        public bool YAxisLocked
+        {
+            get => IsFieldLocked(MappingTarget.Y);
+            set => RequestSetFieldLockedRpc(MappingTarget.Y, value);
+        }
+
+        public bool ZAxisLocked
+        {
+            get => IsFieldLocked(MappingTarget.Z);
+            set => RequestSetFieldLockedRpc(MappingTarget.Z, value);
+        }
 
         public void RequestSetAxisLockedRpc(int axis, bool locked)
         {
+            if (TryGetAxisTarget(axis, out MappingTarget target))
+                RequestSetFieldLockedRpc(target, locked);
+        }
+
+        public bool IsAxisLocked(int axis) => TryGetAxisTarget(axis, out MappingTarget target) && IsFieldLocked(target);
+
+        private static bool TryGetAxisTarget(int axis, out MappingTarget target)
+        {
             switch (axis)
             {
-                case 0: XAxisLocked = locked; break;
-                case 1: YAxisLocked = locked; break;
-                case 2: ZAxisLocked = locked; break;
-                default: return;
+                case 0: target = MappingTarget.X; return true;
+                case 1: target = MappingTarget.Y; return true;
+                case 2: target = MappingTarget.Z; return true;
+                default: target = MappingTarget.X; return false;
             }
+        }
+
+        /// <summary>
+        /// True when Shuffle keeps this field's label. A field Shuffle never touches (Filter), and
+        /// Size while Fixed, always count as locked.
+        /// </summary>
+        public bool IsFieldLocked(MappingTarget target)
+        {
+            if (!CanUnlockField(target))
+                return true;
+
+            return GetShuffleLocksForCurrentDataset().TryGetValue(target, out bool locked)
+                ? locked
+                : ShuffleLocks.DefaultLocked(target);
+        }
+
+        /// <summary>Whether the field can be unlocked right now: any shuffled field, Size only while Mapped.</summary>
+        public bool CanUnlockField(MappingTarget target) =>
+            ShuffleLocks.IsShuffled(target) && (target != MappingTarget.Size || SizeMapped);
+
+        /// <summary>
+        /// True when every field of the island that can be unlocked right now is locked. The
+        /// island's Lock all / Unlock all button uses this to decide which of the two it does.
+        /// </summary>
+        public bool IsIslandLocked(ShuffleIsland island)
+        {
+            foreach (MappingTarget target in ShuffleLocks.FieldsIn(island))
+            {
+                if (CanUnlockField(target) && !IsFieldLocked(target))
+                    return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>True when every shuffle field that can be unlocked right now is locked.</summary>
+        public bool AreAllFieldsLocked()
+        {
+            foreach (ShuffleIsland island in ShuffleLocks.Islands)
+            {
+                if (!IsIslandLocked(island))
+                    return false;
+            }
+
+            return true;
+        }
+
+        public void RequestSetFieldLockedRpc(MappingTarget target, bool locked)
+        {
+            if (SetFieldLocked(target, locked))
+                OnShuffleLocksChanged();
+        }
+
+        public void RequestSetIslandLockedRpc(ShuffleIsland island, bool locked)
+        {
+            bool changed = false;
+            foreach (MappingTarget target in ShuffleLocks.FieldsIn(island))
+                changed |= SetFieldLocked(target, locked);
+
+            if (changed)
+                OnShuffleLocksChanged();
+        }
+
+        public void RequestSetAllLockedRpc(bool locked)
+        {
+            bool changed = false;
+            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
+                changed |= SetFieldLocked(target, locked);
+
+            if (changed)
+                OnShuffleLocksChanged();
+        }
+
+        // Stores one lock without saving or raising events. Unlocking is refused for a field that
+        // can't be unlocked right now (Size while Fixed). Returns true when the stored value changed.
+        private bool SetFieldLocked(MappingTarget target, bool locked)
+        {
+            if (!ShuffleLocks.IsShuffled(target))
+                return false;
+
+            if (!locked && !CanUnlockField(target))
+                return false;
+
+            Dictionary<MappingTarget, bool> locks = GetShuffleLocksForCurrentDataset();
+            if (locks.TryGetValue(target, out bool current) && current == locked)
+                return false;
+
+            locks[target] = locked;
+            return true;
+        }
+
+        private void OnShuffleLocksChanged()
+        {
+            if (LoadedDataset != null)
+                SaveShuffleLockPrefs();
+
             OnPlotSettingsChanged?.Invoke();
         }
 
-        public bool IsAxisLocked(int axis) => axis switch
+        private Dictionary<MappingTarget, bool> GetShuffleLocksForCurrentDataset()
         {
-            0 => XAxisLocked,
-            1 => YAxisLocked,
-            2 => ZAxisLocked,
-            _ => false
-        };
+            if (LoadedDataset == null)
+                return m_NoDatasetShuffleLocks;
+
+            string key = LoadedDataset.Name;
+
+            if (!m_ShuffleLocksByDataset.TryGetValue(key, out Dictionary<MappingTarget, bool> locks))
+            {
+                locks = ShuffleLocks.CreateDefaults();
+                m_ShuffleLocksByDataset[key] = locks;
+            }
+
+            return locks;
+        }
+
+        // Shuffle lock file: per dataset, one entry per field (field name + Locked).
+        [Serializable]
+        private class FieldLockPref
+        {
+            public string Field;
+            public bool Locked;
+        }
+
+        [Serializable]
+        private class DatasetShuffleLockPrefs
+        {
+            public string DatasetName;
+            public List<FieldLockPref> Fields = new();
+        }
+
+        [Serializable]
+        private class ShuffleLockPrefsFile
+        {
+            public List<DatasetShuffleLockPrefs> Datasets = new();
+        }
+
+        private string ShuffleLockPrefsFilePath => Path.Combine(Application.persistentDataPath, "scatterplot_shuffle_lock_prefs.json");
+
+        private void LoadShuffleLockPrefs()
+        {
+            try
+            {
+                if (!File.Exists(ShuffleLockPrefsFilePath))
+                    return;
+
+                string json = File.ReadAllText(ShuffleLockPrefsFilePath);
+                ShuffleLockPrefsFile data = JsonUtility.FromJson<ShuffleLockPrefsFile>(json);
+
+                if (data?.Datasets == null)
+                    return;
+
+                foreach (DatasetShuffleLockPrefs entry in data.Datasets)
+                {
+                    if (string.IsNullOrEmpty(entry.DatasetName) || entry.Fields == null)
+                        continue;
+
+                    // Start from the defaults so a field missing from the file keeps its default.
+                    Dictionary<MappingTarget, bool> locks = ShuffleLocks.CreateDefaults();
+                    foreach (FieldLockPref field in entry.Fields)
+                    {
+                        if (Enum.TryParse(field.Field, out MappingTarget target) && ShuffleLocks.IsShuffled(target))
+                            locks[target] = field.Locked;
+                    }
+
+                    m_ShuffleLocksByDataset[entry.DatasetName] = locks;
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to load shuffle lock prefs from {ShuffleLockPrefsFilePath}: {e.Message}");
+            }
+        }
+
+        private void SaveShuffleLockPrefs()
+        {
+            try
+            {
+                ShuffleLockPrefsFile data = new ShuffleLockPrefsFile();
+
+                foreach (KeyValuePair<string, Dictionary<MappingTarget, bool>> kvp in m_ShuffleLocksByDataset)
+                {
+                    DatasetShuffleLockPrefs entry = new DatasetShuffleLockPrefs { DatasetName = kvp.Key };
+                    foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
+                    {
+                        bool locked = kvp.Value.TryGetValue(target, out bool stored) ? stored : ShuffleLocks.DefaultLocked(target);
+                        entry.Fields.Add(new FieldLockPref { Field = target.ToString(), Locked = locked });
+                    }
+
+                    data.Datasets.Add(entry);
+                }
+
+                File.WriteAllText(ShuffleLockPrefsFilePath, JsonUtility.ToJson(data, true));
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to save shuffle lock prefs to {ShuffleLockPrefsFilePath}: {e.Message}");
+            }
+        }
 
         /// <summary>
         /// Column names excluded from RequestShuffleColumnsRpc's random pool,
@@ -310,15 +534,23 @@ namespace DataViz
         public DatasetColumnar LoadedDataset;
 
         /// <summary>
-        /// One shuffle's worth of axis selection, saved so "back"/"forward"
-        /// can re-apply a previous combination instead of generating a new
-        /// random one.
+        /// One shuffle's worth of field selection (column index per shuffle-lockable field, -1 =
+        /// none), saved so "back"/"forward" can re-apply a previous combination instead of
+        /// generating a new random one.
         /// </summary>
         private struct ShuffleState
         {
             public int X;
             public int Y;
             public int Z;
+            public int Size;
+            public int Colour;
+            public int Glyph;
+            public int Time;
+
+            public bool SameAs(ShuffleState other) =>
+                X == other.X && Y == other.Y && Z == other.Z && Size == other.Size &&
+                Colour == other.Colour && Glyph == other.Glyph && Time == other.Time;
         }
 
         /// <summary>
@@ -354,20 +586,69 @@ namespace DataViz
 
         private void ApplyShuffleState(ShuffleState state)
         {
+            ApplyShuffleFields(state);
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        // Writes every field of a ShuffleState onto the plot settings without raising events.
+        // A changed Time column restarts the scrub and stops playback, like RequestTimeColumnRpc.
+        private void ApplyShuffleFields(ShuffleState state)
+        {
+            bool timeChanged = TimeColumnIndex != state.Time;
+
             XColumnIndex = state.X;
             YColumnIndex = state.Y;
             ZColumnIndex = state.Z;
+            SizeColumnIndex = state.Size;
+            ColorColumnIndex = state.Colour;
+            GlyphColumnIndex = state.Glyph;
+            TimeColumnIndex = state.Time;
 
-            //Debug that was needed for testing purposes, commented out for now, but can be re-enabled if needed for future debugging.
-            /*
-            Debug.Log(
-                $"[MultiplayerScatterplotManager] Applied shuffle state -> " +
-                $"X={LoadedDataset.GetColumn(XColumnIndex)?.Name}, " +
-                $"Y={LoadedDataset.GetColumn(YColumnIndex)?.Name}, " +
-                $"Z={LoadedDataset.GetColumn(ZColumnIndex)?.Name}"
-            );*/
+            if (timeChanged)
+            {
+                TimeScrub = 0f;
+                IsPlaying = false;
+            }
+        }
 
-            OnPlotSettingsChanged?.Invoke();
+        private ShuffleState CaptureShuffleState() => new ShuffleState
+        {
+            X = XColumnIndex,
+            Y = YColumnIndex,
+            Z = ZColumnIndex,
+            Size = SizeColumnIndex,
+            Colour = ColorColumnIndex,
+            Glyph = GlyphColumnIndex,
+            Time = TimeColumnIndex
+        };
+
+        private static int GetShuffleField(ShuffleState state, MappingTarget target)
+        {
+            switch (target)
+            {
+                case MappingTarget.X: return state.X;
+                case MappingTarget.Y: return state.Y;
+                case MappingTarget.Z: return state.Z;
+                case MappingTarget.Size: return state.Size;
+                case MappingTarget.Colour: return state.Colour;
+                case MappingTarget.Glyph: return state.Glyph;
+                case MappingTarget.Time: return state.Time;
+                default: return -1;
+            }
+        }
+
+        private static void SetShuffleField(ref ShuffleState state, MappingTarget target, int columnIndex)
+        {
+            switch (target)
+            {
+                case MappingTarget.X: state.X = columnIndex; break;
+                case MappingTarget.Y: state.Y = columnIndex; break;
+                case MappingTarget.Z: state.Z = columnIndex; break;
+                case MappingTarget.Size: state.Size = columnIndex; break;
+                case MappingTarget.Colour: state.Colour = columnIndex; break;
+                case MappingTarget.Glyph: state.Glyph = columnIndex; break;
+                case MappingTarget.Time: state.Time = columnIndex; break;
+            }
         }
 
         public event Action OnDatasetLoaded;
@@ -393,6 +674,7 @@ namespace DataViz
 
             LoadColumnPrefs();
             LoadBookmarkPrefs();
+            LoadShuffleLockPrefs();
         }
 
         private void OnDestroy()
@@ -888,23 +1170,21 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Randomizes X/Y/Z/Color/Time column selection for data exploration.
-        ///
-        /// Not a uniform random pick across all columns - with high-dimensional
-        /// datasets that mix a handful of meaningful columns with many
-        /// noise/near-constant ones (e.g. synthetic test data), a pure random
-        /// pick would mostly land on uninteresting axes. Instead:
-        ///   - X/Y/Z are chosen without replacement, weighted by each numeric
-        ///     column's value range (MaxValue - MinValue). Wider range tends
-        ///     to correlate with "carries real structure" vs. narrow-range
-        ///     noise columns, and this is essentially free since range is
-        ///     already computed at import time.
-        ///   - Color prefers an existing categorical column (usually the
-        ///     most narratively useful choice, e.g. a class/cluster label),
-        ///     falling back to a weighted-random numeric column otherwise.
-        ///   - Time is only enabled some of the time, and only from columns
-        ///     whose name suggests they represent time steps - there's no
-        ///     way to infer that purely from the data itself.
+        /// Shuffle: gives every UNLOCKED field (see IsFieldLocked) a new random label, walking the
+        /// fields in the fixed order ShuffleLocks.ShuffleOrder (X, Y, Z, Size, Colour, Glyph, Time).
+        /// Locked fields keep their label. Rules:
+        ///   - a field only draws labels it accepts (ColumnMappingRules.Accepts): X/Y/Z/Size/Time
+        ///     numeric or DateTime, Colour any label, Glyph categorical. Size only while Mapped.
+        ///   - X, Y, Z and Size never share a label (locked ones are reserved first). Colour and
+        ///     Glyph may repeat an axis label.
+        ///   - this dataset's blacklisted labels are skipped for every field.
+        ///   - a field with no valid label left keeps its current one; the others still shuffle.
+        /// X/Y/Z/Size picks stay weighted by value range (MaxValue - MinValue): in high-dimensional
+        /// data that mixes a few meaningful columns with many near-constant ones, a wider range
+        /// tends to mean "carries real structure". Colour, Glyph and Time pick uniformly.
+        /// Each press is recorded in this dataset's shuffle history (all seven fields), preceded by
+        /// the settings it replaced when those were not already the current entry, so << always
+        /// returns to what was shown before the press.
         /// </summary>
         public void RequestShuffleColumnsRpc()
         {
@@ -913,63 +1193,95 @@ namespace DataViz
 
             int columnCount = LoadedDataset.ColumnCount;
 
-            float[] weights = new float[columnCount];
-            for (int i = 0; i < columnCount; i++)
-            {
-                DatasetColumn col = LoadedDataset.GetColumn(i);
-
-                if (col == null)
-                {
-                    weights[i] = 0f;
-                }
-                else if (col.IsNumeric)
-                {
-                    weights[i] = Mathf.Max(0.0001f, col.MaxValue - col.MinValue);
-                }
-                else if (col.IsCategorical)
-                {
-                    // Flat weight: categorical columns can still be chosen
-                    // as an axis (e.g. plotting by category ordinal), but
-                    // shouldn't dominate over genuinely high-range numeric ones.
-                    weights[i] = 1f;
-                }
-                else
-                {
-                    weights[i] = 0.0001f;
-                }
-            }
-
-            List<int> usedIndices = new List<int>();
-
-            // Seed with blacklisted columns so they're never picked by X/Y/Z
-            // shuffle - reuses the exact same exclusion mechanism WeightedRandomIndex
-            // already had for avoiding picking the same column twice. Only this
-            // dataset's own blacklist entries apply.
+            // Only this dataset's own blacklist entries apply.
+            HashSet<int> blacklisted = new HashSet<int>();
             foreach (string blacklistedName in GetBlacklistForCurrentDataset())
             {
                 if (LoadedDataset.ColumnMapping.TryGetValue(blacklistedName, out int blacklistedIdx))
-                {
-                    usedIndices.Add(blacklistedIdx);
-                }
+                    blacklisted.Add(blacklistedIdx);
             }
 
-            int xIdx = XAxisLocked ? XColumnIndex : WeightedRandomIndex(weights, usedIndices);
-            usedIndices.Add(xIdx);
+            ShuffleState before = CaptureShuffleState();
+            ShuffleState next = before;
 
-            int yIdx = YAxisLocked ? YColumnIndex : WeightedRandomIndex(weights, usedIndices);
-            usedIndices.Add(yIdx);
+            // X, Y, Z and Size share one pool of labels: a label one of them holds is off-limits to
+            // the others. Locked fields keep theirs, so those are reserved before anything is picked.
+            // Size's label only counts while Size is Mapped (it isn't shown otherwise).
+            HashSet<int> axisLabelsInUse = new HashSet<int>();
+            // Current labels of the unlocked X/Y/Z/Size fields: avoided while there is an
+            // alternative, so an earlier field doesn't take the label a later one may fall back on.
+            HashSet<int> unlockedAxisLabels = new HashSet<int>();
+            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
+            {
+                if (!ShuffleLocks.IsAxisLike(target))
+                    continue;
 
-            int zIdx = ZAxisLocked ? ZColumnIndex : WeightedRandomIndex(weights, usedIndices);
-            usedIndices.Add(zIdx);
+                int current = GetShuffleField(before, target);
+                if (current < 0 || (target == MappingTarget.Size && !SizeMapped))
+                    continue;
 
-            XColumnIndex = xIdx;
-            YColumnIndex = yIdx;
-            ZColumnIndex = zIdx;
+                if (IsFieldLocked(target))
+                    axisLabelsInUse.Add(current);
+                else
+                    unlockedAxisLabels.Add(current);
+            }
 
-            // Save into this dataset's shuffle history. If the user had
-            // navigated back and is now shuffling again, this is a new
-            // branch - discard the old "forward" states, same as browser
-            // back/forward or standard undo/redo semantics.
+            List<int> candidates = new List<int>();
+            List<int> preferred = new List<int>();
+
+            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
+            {
+                if (IsFieldLocked(target))
+                    continue;
+
+                bool axisLike = ShuffleLocks.IsAxisLike(target);
+                int current = GetShuffleField(before, target);
+
+                candidates.Clear();
+                preferred.Clear();
+                for (int i = 0; i < columnCount; i++)
+                {
+                    if (i == current || blacklisted.Contains(i))
+                        continue;
+                    if (axisLike && axisLabelsInUse.Contains(i))
+                        continue;
+                    if (!ColumnMappingRules.Accepts(target, LoadedDataset.GetColumn(i), this))
+                        continue;
+
+                    candidates.Add(i);
+                    if (!axisLike || !unlockedAxisLabels.Contains(i))
+                        preferred.Add(i);
+                }
+
+                List<int> pool = preferred.Count > 0 ? preferred : candidates;
+                int picked = current; // no valid label left: keep the current one
+                if (pool.Count > 0)
+                    picked = axisLike ? WeightedRandomPick(pool) : pool[UnityEngine.Random.Range(0, pool.Count)];
+
+                if (axisLike)
+                {
+                    unlockedAxisLabels.Remove(current);
+                    if (picked >= 0)
+                        axisLabelsInUse.Add(picked);
+                }
+
+                SetShuffleField(ref next, target, picked);
+            }
+
+            if (next.SameAs(before))
+            {
+                // Everything locked (or nothing valid to pick): nothing changes, nothing recorded.
+                Debug.Log("[MultiplayerScatterplotManager] Shuffle: no unlocked field could change.");
+                return;
+            }
+
+            ApplyShuffleFields(next);
+
+            // Save into this dataset's shuffle history. If the user had navigated back and is now
+            // shuffling again, this is a new branch - discard the old "forward" states, same as
+            // browser back/forward or standard undo/redo semantics. The settings this press
+            // replaced are recorded first unless they already are the current entry (e.g. the
+            // first shuffle, or after the user changed a mapping by hand).
             ShuffleHistory history = GetOrCreateShuffleHistory();
             if (history != null)
             {
@@ -978,69 +1290,29 @@ namespace DataViz
                     history.States.RemoveRange(history.CurrentIndex + 1, history.States.Count - history.CurrentIndex - 1);
                 }
 
-                history.States.Add(new ShuffleState { X = xIdx, Y = yIdx, Z = zIdx });
+                if (history.CurrentIndex < 0 || !history.States[history.CurrentIndex].SameAs(before))
+                    history.States.Add(before);
+
+                history.States.Add(next);
                 history.CurrentIndex = history.States.Count - 1;
             }
 
-            // Color: prefer a categorical column if one exists.
-            // Commented out for now, since for now we want the user to have full control over color mapping and not have it change on shuffle.
-            /*List<int> categoricalCandidates = new List<int>();
-            for (int i = 0; i < columnCount; i++)
-            {
-                DatasetColumn col = LoadedDataset.GetColumn(i);
-                if (col != null && col.IsCategorical)
-                {
-                    categoricalCandidates.Add(i);
-                }
-            }
-            
-            if (categoricalCandidates.Count > 0)
-            {
-                ColorColumnIndex = categoricalCandidates[UnityEngine.Random.Range(0, categoricalCandidates.Count)];
-            }
-            else
-            {
-                ColorColumnIndex = WeightedRandomIndex(weights, usedIndices);
-            }*/
-
-            // Time: only sometimes, and only from columns that look like
-            // they represent discrete time steps by name.
-            // Commented out for now, since shuffling time columns is not a great user experience and can be confusing.
-            /*TimeColumnIndex = -1;
-
-            if (UnityEngine.Random.value < 0.3f)
-            {
-                List<int> timeCandidates = new List<int>();
-                for (int i = 0; i < columnCount; i++)
-                {
-                    DatasetColumn col = LoadedDataset.GetColumn(i);
-                    if (col != null && col.IsNumeric &&
-                        col.Name.IndexOf("time", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        timeCandidates.Add(i);
-                    }
-                }
-
-                if (timeCandidates.Count > 0)
-                {
-                    TimeColumnIndex = timeCandidates[UnityEngine.Random.Range(0, timeCandidates.Count)];
-                }
-            }*/
-
-            TimeScrub = 0f;
-            IsPlaying = false;
-
             Debug.Log(
                 $"[MultiplayerScatterplotManager] Shuffled -> " +
-                $"X={LoadedDataset.GetColumn(XColumnIndex)?.Name}, " +
-                $"Y={LoadedDataset.GetColumn(YColumnIndex)?.Name}, " +
-                $"Z={LoadedDataset.GetColumn(ZColumnIndex)?.Name}, " +
-                $"Color={(ColorColumnIndex >= 0 ? LoadedDataset.GetColumn(ColorColumnIndex)?.Name : "None")}, " +
-                $"Time={(TimeColumnIndex >= 0 ? LoadedDataset.GetColumn(TimeColumnIndex)?.Name : "None")}"
+                $"X={ColumnNameOrNone(XColumnIndex)}, " +
+                $"Y={ColumnNameOrNone(YColumnIndex)}, " +
+                $"Z={ColumnNameOrNone(ZColumnIndex)}, " +
+                $"Size={ColumnNameOrNone(SizeColumnIndex)}, " +
+                $"Color={ColumnNameOrNone(ColorColumnIndex)}, " +
+                $"Glyph={ColumnNameOrNone(GlyphColumnIndex)}, " +
+                $"Time={ColumnNameOrNone(TimeColumnIndex)}"
             );
 
             OnPlotSettingsChanged?.Invoke();
         }
+
+        private string ColumnNameOrNone(int columnIndex) =>
+            columnIndex >= 0 && LoadedDataset != null ? LoadedDataset.GetColumn(columnIndex)?.Name ?? "None" : "None";
 
         /// <summary>
         /// Steps back to the previous shuffle result for the current dataset,
@@ -1081,49 +1353,44 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Picks a random column index, weighted by the given weights array,
-        /// skipping any index already present in excludeIndices. Falls back
-        /// to uniform-random among non-excluded columns if all weights are
-        /// zero (e.g. every remaining column somehow has no range).
+        /// Picks one column index from pool, weighted by ColumnShuffleWeight. Falls back to a
+        /// uniform pick if every weight is zero. pool must not be empty.
         /// </summary>
-        private int WeightedRandomIndex(float[] weights, List<int> excludeIndices)
+        private int WeightedRandomPick(List<int> pool)
         {
             float totalWeight = 0f;
-            for (int i = 0; i < weights.Length; i++)
-            {
-                if (excludeIndices.Contains(i)) continue;
-                totalWeight += weights[i];
-            }
+            foreach (int columnIndex in pool)
+                totalWeight += ColumnShuffleWeight(columnIndex);
 
             if (totalWeight <= 0f)
-            {
-                List<int> candidates = new List<int>();
-                for (int i = 0; i < weights.Length; i++)
-                {
-                    if (!excludeIndices.Contains(i)) candidates.Add(i);
-                }
-                return candidates.Count > 0 ? candidates[UnityEngine.Random.Range(0, candidates.Count)] : 0;
-            }
+                return pool[UnityEngine.Random.Range(0, pool.Count)];
 
             float roll = UnityEngine.Random.Range(0f, totalWeight);
             float cumulative = 0f;
 
-            for (int i = 0; i < weights.Length; i++)
+            foreach (int columnIndex in pool)
             {
-                if (excludeIndices.Contains(i)) continue;
-                cumulative += weights[i];
+                cumulative += ColumnShuffleWeight(columnIndex);
                 if (roll <= cumulative)
-                {
-                    return i;
-                }
+                    return columnIndex;
             }
 
-            for (int i = weights.Length - 1; i >= 0; i--)
-            {
-                if (!excludeIndices.Contains(i)) return i;
-            }
+            return pool[pool.Count - 1];
+        }
 
-            return 0;
+        // Numeric (incl. DateTime) columns weigh their value range, so wide-range columns are
+        // picked more often than near-constant ones; anything else gets a flat weight.
+        private float ColumnShuffleWeight(int columnIndex)
+        {
+            DatasetColumn col = LoadedDataset?.GetColumn(columnIndex);
+
+            if (col == null)
+                return 0f;
+
+            if (col.IsNumeric)
+                return Mathf.Max(0.0001f, col.MaxValue - col.MinValue);
+
+            return 1f;
         }
 
         private void Update()

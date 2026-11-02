@@ -173,15 +173,19 @@ namespace DataViz
 
         private void OnShuffleLocksChanged()
         {
-            if (LoadedDataset != null)
+            if (HasNamedDataset)
                 SaveShuffleLockPrefs();
 
             OnPlotSettingsChanged?.Invoke();
         }
 
+        // LoadedDataset is a serialized field, so before the first real load it can be an empty
+        // placeholder with no name; locks set then must not be stored under an empty key.
+        private bool HasNamedDataset => LoadedDataset != null && !string.IsNullOrEmpty(LoadedDataset.Name);
+
         private Dictionary<MappingTarget, bool> GetShuffleLocksForCurrentDataset()
         {
-            if (LoadedDataset == null)
+            if (!HasNamedDataset)
                 return m_NoDatasetShuffleLocks;
 
             string key = LoadedDataset.Name;
@@ -261,12 +265,20 @@ namespace DataViz
 
                 foreach (KeyValuePair<string, Dictionary<MappingTarget, bool>> kvp in m_ShuffleLocksByDataset)
                 {
+                    if (string.IsNullOrEmpty(kvp.Key))
+                        continue;
+
                     DatasetShuffleLockPrefs entry = new DatasetShuffleLockPrefs { DatasetName = kvp.Key };
+                    bool allDefaults = true;
                     foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
                     {
                         bool locked = kvp.Value.TryGetValue(target, out bool stored) ? stored : ShuffleLocks.DefaultLocked(target);
+                        allDefaults &= locked == ShuffleLocks.DefaultLocked(target);
                         entry.Fields.Add(new FieldLockPref { Field = target.ToString(), Locked = locked });
                     }
+
+                    if (allDefaults)
+                        continue; // a dataset never changed from the defaults needs no entry
 
                     data.Datasets.Add(entry);
                 }

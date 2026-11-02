@@ -201,8 +201,8 @@ namespace DataViz
             // Glyph column: independent of X/Y/Z (same as colorCol), so users can encode a
             // dimension via shape even when it isn't one of the plotted axes. The actual
             // shape per label is a manual mapping (m_Manager.GlyphAssignments), looked up
-            // per row below: the value's own assignment, else the label-wide "All values"
-            // assignment, else glyph 0. Rows with no value in the column always get glyph 0.
+            // per row below: the value's own assignment, else glyph 0. Rows with no value in
+            // the column always get glyph 0.
             int glyphCol = m_Manager.GlyphColumnIndex;
             bool glyphActive = glyphCol >= 0 && glyphCol < dataset.ColumnCount;
             DatasetColumn glyphColumn = glyphActive ? dataset.Columns[glyphCol] : null;

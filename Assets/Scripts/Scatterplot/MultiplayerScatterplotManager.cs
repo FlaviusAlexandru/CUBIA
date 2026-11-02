@@ -521,19 +521,11 @@ namespace DataViz
         // one of the plotted X/Y/Z axes - mirrors how ColorColumnIndex is already decoupled
         // from the axes. GlyphAssignments is the manual label -> glyph mapping; unassigned
         // labels fall back to glyph 0 (the base circle) in ScatterplotVisualizer.
-        // The reserved label AllValuesGlyphLabel ("All values" in the UI) is stored in the same
-        // list and applies to every row that has a value in the glyph column; a per-value
-        // assignment overrides it for that value. Rows with no value keep the default glyph.
+        // Rows with no value in the glyph column keep the default glyph.
         //</summary>
         [Header("Glyph Settings")]
         public int GlyphColumnIndex = -1;
         public List<GlyphAssignment> GlyphAssignments = new();
-
-        /// <summary>
-        /// Reserved GlyphAssignment.Label for the label-wide ("All values") shape. Starts with a
-        /// control character so it can never collide with a real CSV value.
-        /// </summary>
-        public const string AllValuesGlyphLabel = "\u0001AllValues";
 
         [System.Serializable]
         public class GlyphAssignment
@@ -1081,16 +1073,14 @@ namespace DataViz
 
         /// <summary>
         /// Glyph for one row of the glyph column: its value's own assignment if it has one,
-        /// otherwise the label-wide "All values" assignment, otherwise defaultGlyph. Rows
-        /// with no value (hasValue false) always get defaultGlyph.
+        /// otherwise defaultGlyph. Rows with no value (hasValue false) always get defaultGlyph.
         /// </summary>
         public int GetGlyphForRow(string label, bool hasValue, int defaultGlyph = 0)
         {
             if (!hasValue)
                 return defaultGlyph;
 
-            int allValuesGlyph = GetGlyphForLabel(AllValuesGlyphLabel, defaultGlyph);
-            return GetGlyphForLabel(label, allValuesGlyph);
+            return GetGlyphForLabel(label, defaultGlyph);
         }
 
 

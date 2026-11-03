@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using DataViz.Networking;
 using UnityEngine;
 
 namespace DataViz
@@ -876,6 +877,8 @@ namespace DataViz
 
         public void RequestLoadDatasetRpc(string fileName)
         {
+            if (ForwardToHost(PlotOp.LoadDataset, text: fileName)) return;
+
             LoadLocalDataset(fileName);
 
             if (LoadedDataset != null)
@@ -911,36 +914,48 @@ namespace DataViz
 
         public void RequestXColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.XColumn, columnIndex)) return;
+
             XColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestYColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.YColumn, columnIndex)) return;
+
             YColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestZColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.ZColumn, columnIndex)) return;
+
             ZColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestColorColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.ColourColumn, columnIndex)) return;
+
             ColorColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestPointSizeRpc(float size)
         {
+            if (ForwardToHost(PlotOp.PointSize, floatArg: size)) return;
+
             PointSize = Mathf.Clamp(size, 0f, MaxPointSize);
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestTimeColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.TimeColumn, columnIndex)) return;
+
             TimeColumnIndex = columnIndex;
             IsPlaying = false; // stop any running playback when the column changes
             OnPlotSettingsChanged?.Invoke();
@@ -948,12 +963,16 @@ namespace DataViz
 
         public void RequestTimeScrubRpc(float normalizedValue)
         {
+            if (ForwardToHost(PlotOp.TimeScrub, floatArg: normalizedValue)) return;
+
             TimeScrub = Mathf.Clamp01(normalizedValue);
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestPlaybackToggleRpc(bool isPlaying)
         {
+            if (ForwardToHost(PlotOp.Playback, boolArg: isPlaying)) return;
+
             IsPlaying = isPlaying;
 
             // If pressing play after having reached the end, loop back to the start
@@ -979,6 +998,8 @@ namespace DataViz
         /// </summary>
         public void RequestFilterIndexRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.FilterColumn, columnIndex)) return;
+
             if (columnIndex < 0)
             {
                 if (Filters.Count > 0)
@@ -1002,6 +1023,8 @@ namespace DataViz
         /// <summary>Dropdown path: sets the value of the FIRST filter entry (no-op without one).</summary>
         public void RequestFilterLabelRpc(string filterLabel)
         {
+            if (ForwardToHost(PlotOp.FilterLabel, text: filterLabel)) return;
+
             if (Filters.Count == 0)
                 return;
 
@@ -1022,6 +1045,8 @@ namespace DataViz
             if (Filters.Exists(f => f.ColumnIndex == columnIndex && f.Label == filterLabel))
                 return false;
 
+            if (ForwardToHost(PlotOp.AddFilter, columnIndex, text: filterLabel)) return true;
+
             Filters.Add(new FilterEntry { ColumnIndex = columnIndex, Label = filterLabel });
             OnPlotSettingsChanged?.Invoke();
             return true;
@@ -1029,6 +1054,8 @@ namespace DataViz
 
         public void RequestRemoveFilterRpc(int filterIndex)
         {
+            if (ForwardToHost(PlotOp.RemoveFilter, filterIndex)) return;
+
             if (filterIndex < 0 || filterIndex >= Filters.Count)
                 return;
 
@@ -1038,24 +1065,32 @@ namespace DataViz
 
         public void RequestClearFiltersRpc()
         {
+            if (ForwardToHost(PlotOp.ClearFilters)) return;
+
             Filters.Clear();
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestSizeColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.SizeColumn, columnIndex)) return;
+
             SizeColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestSizeMappedRpc(bool mapped)
         {
+            if (ForwardToHost(PlotOp.SizeMapped, boolArg: mapped)) return;
+
             SizeMapped = mapped;
             OnPlotSettingsChanged?.Invoke();
         }
 
         public void RequestGlyphColumnRpc(int columnIndex)
         {
+            if (ForwardToHost(PlotOp.GlyphColumn, columnIndex)) return;
+
             // Ranges are values of the old glyph column: a new label starts with none.
             if (columnIndex != GlyphColumnIndex)
                 GlyphRanges.Clear();
@@ -1072,6 +1107,8 @@ namespace DataViz
         {
             if (string.IsNullOrEmpty(label))
                 return;
+
+            if (ForwardToHost(PlotOp.GlyphAssignment, glyphIndex, text: label)) return;
 
             GlyphAssignment existing = GlyphAssignments.Find(a => a.Label == label);
             if (existing != null)
@@ -1152,6 +1189,8 @@ namespace DataViz
                 Debug.LogWarning($"[MultiplayerScatterplotManager] Glyph ranges rejected: {error}");
                 return false;
             }
+
+            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForGlyphRanges(ranges))) return true;
 
             GlyphRanges = new List<GlyphRange>();
             if (ranges != null)
@@ -1350,6 +1389,8 @@ namespace DataViz
         /// </summary>
         public void RequestShuffleColumnsRpc()
         {
+            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForShuffle(LockedFieldMask(), GetBlacklistForCurrentDataset()))) return;
+
             if (LoadedDataset == null || LoadedDataset.ColumnCount == 0)
                 return;
 
@@ -1357,7 +1398,7 @@ namespace DataViz
 
             // Only this dataset's own blacklist entries apply.
             HashSet<int> blacklisted = new HashSet<int>();
-            foreach (string blacklistedName in GetBlacklistForCurrentDataset())
+            foreach (string blacklistedName in m_ShuffleBlacklistOverride ?? GetBlacklistForCurrentDataset())
             {
                 if (LoadedDataset.ColumnMapping.TryGetValue(blacklistedName, out int blacklistedIdx))
                     blacklisted.Add(blacklistedIdx);
@@ -1382,7 +1423,7 @@ namespace DataViz
                 if (current < 0 || (target == MappingTarget.Size && !SizeMapped))
                     continue;
 
-                if (IsFieldLocked(target))
+                if (IsShuffleFieldLocked(target))
                     axisLabelsInUse.Add(current);
                 else
                     unlockedAxisLabels.Add(current);
@@ -1393,7 +1434,7 @@ namespace DataViz
 
             foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
             {
-                if (IsFieldLocked(target))
+                if (IsShuffleFieldLocked(target))
                     continue;
 
                 bool axisLike = ShuffleLocks.IsAxisLike(target);
@@ -1483,6 +1524,8 @@ namespace DataViz
         /// </summary>
         public void RequestShuffleBackwardRpc()
         {
+            if (ForwardToHost(PlotOp.ShuffleBackward)) return;
+
             ShuffleHistory history = GetOrCreateShuffleHistory();
 
             if (history == null || history.CurrentIndex <= 0)
@@ -1502,6 +1545,8 @@ namespace DataViz
         /// </summary>
         public void RequestShuffleForwardRpc()
         {
+            if (ForwardToHost(PlotOp.ShuffleForward)) return;
+
             ShuffleHistory history = GetOrCreateShuffleHistory();
 
             if (history == null || history.CurrentIndex >= history.States.Count - 1)
@@ -1554,6 +1599,64 @@ namespace DataViz
 
             return 1f;
         }
+
+        // ---- Multiplayer -------------------------------------------------------------------------
+        // Every shared Request...Rpc starts with a ForwardToHost guard: on a connected non-host
+        // client the change is sent to the host (NetworkScatterplotState), which applies it and
+        // replicates the result to everyone, so the method returns without applying it locally.
+        // Offline and on the host the guard is false and the method behaves exactly as before.
+        // Local-only state (bookmarks, blacklist, shuffle locks, tooltips) is never forwarded.
+
+        private static bool ForwardToHost(PlotOp op, int intArg = 0, float floatArg = 0f, bool boolArg = false, string text = null) =>
+            NetworkScatterplotState.TryForwardToHost(new PlotRequest(op, intArg, floatArg, boolArg, text));
+
+        /// <summary>
+        /// Client side: shows the host's shared settings without forwarding anything, then raises
+        /// OnPlotSettingsChanged like a local change. The caller loads the host's dataset first.
+        /// </summary>
+        public void ApplyNetworkSnapshot(PlotSnapshot snapshot, float timeScrub)
+        {
+            snapshot.WriteTo(this, timeScrub);
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        // Set only while the host runs a shuffle a client asked for: that client's shuffle locks
+        // (one bit per MappingTarget) and blacklist replace the host's own.
+        private int? m_ShuffleLockMaskOverride;
+        private IReadOnlyCollection<string> m_ShuffleBlacklistOverride;
+
+        /// <summary>Host side: RequestShuffleColumnsRpc with a client's shuffle locks and blacklist.</summary>
+        public void RequestShuffleColumnsForClient(int lockedFieldMask, IReadOnlyCollection<string> blacklist)
+        {
+            m_ShuffleLockMaskOverride = lockedFieldMask;
+            m_ShuffleBlacklistOverride = blacklist;
+            try
+            {
+                RequestShuffleColumnsRpc();
+            }
+            finally
+            {
+                m_ShuffleLockMaskOverride = null;
+                m_ShuffleBlacklistOverride = null;
+            }
+        }
+
+        private int LockedFieldMask()
+        {
+            int mask = 0;
+            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
+            {
+                if (IsFieldLocked(target))
+                    mask |= 1 << (int)target;
+            }
+
+            return mask;
+        }
+
+        private bool IsShuffleFieldLocked(MappingTarget target) =>
+            m_ShuffleLockMaskOverride is int mask
+                ? !CanUnlockField(target) || (mask & (1 << (int)target)) != 0
+                : IsFieldLocked(target);
 
         private void Update()
         {

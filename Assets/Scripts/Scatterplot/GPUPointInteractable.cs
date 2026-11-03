@@ -357,6 +357,9 @@ namespace DataViz
             int yCol = m_Visualizer.m_Manager.YColumnIndex;
             int zCol = m_Visualizer.m_Manager.ZColumnIndex;
             int colorCol = m_Visualizer.m_Manager.ColorColumnIndex;
+            // Size only counts when it is mapped; Fixed size uses no column.
+            int sizeCol = m_Visualizer.m_Manager.SizeMapped ? m_Visualizer.m_Manager.SizeColumnIndex : -1;
+            int timeCol = m_Visualizer.m_Manager.TimeColumnIndex;
 
             EnsureTooltipCreated();
 
@@ -376,17 +379,28 @@ namespace DataViz
                 if (colorCol >= 0 && colorCol < dataset.ColumnCount)
                     text += $"<color=#FFFF44>Color ({dataset.Columns[colorCol].Name}):</color> {FormatCell(dataset, row, rowIndex, colorCol)}\n";
 
+                // Size and Time can change on Shuffle too, so always say which column drives them.
+                if (sizeCol >= 0 && sizeCol < dataset.ColumnCount)
+                    text += $"<color=#FF88FF>Size ({dataset.Columns[sizeCol].Name}):</color> {FormatCell(dataset, row, rowIndex, sizeCol)}\n";
+
+                if (timeCol >= 0 && timeCol < dataset.ColumnCount)
+                    text += $"<color=#AAAAFF>Time ({dataset.Columns[timeCol].Name}):</color> {FormatCell(dataset, row, rowIndex, timeCol)}\n";
+
                 // One line per active filter (they combine with OR, so a row is dimmed only
                 // when none of them matches).
                 foreach (ScatterplotVisualizer.ActiveFilter filter in m_Visualizer.BuildActiveFilters(dataset))
                 {
-                    bool matches = m_Visualizer.RowMatchesFilter(dataset, rowIndex, filter.ColumnIndex, filter.Column, filter.CategoryTable, filter.Label);
+                    bool matches = m_Visualizer.RowMatchesFilter(dataset, rowIndex, filter);
 
                     string matchTag = matches
                         ? " <color=#88FF88>(match)</color>"
                         : " <color=#888888>(no match)</color>";
 
-                    text += $"<color=#FFAA44>Filter ({filter.Column.Name}):</color> {FormatCell(dataset, row, rowIndex, filter.ColumnIndex)}{matchTag}\n";
+                    string rangesTag = filter.Ranges != null && filter.Ranges.Count > 0
+                        ? $" <color=#AAAAAA>[{filter.Ranges.Count} range{(filter.Ranges.Count == 1 ? "" : "s")}]</color>"
+                        : "";
+
+                    text += $"<color=#FFAA44>Filter ({filter.Column.Name}):</color> {FormatCell(dataset, row, rowIndex, filter.ColumnIndex)}{rangesTag}{matchTag}\n";
                 }
 
                 int glyphCol = m_Visualizer.m_Manager.GlyphColumnIndex;
@@ -406,9 +420,29 @@ namespace DataViz
                 }
 
                 m_TooltipText.text = text.TrimEnd('\n');
+                FitTooltipHeight();
             }
 
             m_ActiveTooltip.SetActive(true);
+        }
+
+        // With Size, Time and several filters the text can outgrow the default box: grow the box
+        // to fit (never below its authored height) instead of letting lines spill out of it.
+        private float m_TooltipMinHeight = -1f;
+
+        private void FitTooltipHeight()
+        {
+            RectTransform box = m_ActiveTooltip != null ? m_ActiveTooltip.GetComponent<RectTransform>() : null;
+            if (box == null)
+                return;
+
+            if (m_TooltipMinHeight < 0f)
+                m_TooltipMinHeight = box.sizeDelta.y;
+
+            RectTransform textRect = m_TooltipText.rectTransform;
+            float padding = box.sizeDelta.y - textRect.rect.height; // the text's inset inside the box
+            float needed = m_TooltipText.GetPreferredValues(m_TooltipText.text, textRect.rect.width, 0f).y + padding;
+            box.sizeDelta = new Vector2(box.sizeDelta.x, Mathf.Max(m_TooltipMinHeight, needed));
         }
 
         /// <summary>

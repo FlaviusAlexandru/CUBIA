@@ -1,6 +1,9 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Utilities;
+using UnityEngine.XR.Interaction.Toolkit.Interactables;
+using UnityEngine.XR.Interaction.Toolkit.Interactors;
 using UnityEngine.XR.Interaction.Toolkit.Locomotion.Comfort;
 
 namespace DataViz
@@ -29,6 +32,11 @@ namespace DataViz
         [Tooltip("Same action toggles summon/dismiss, based on current state - mirrors the " +
                  "pattern used for the wrist panel's manual toggle before HandMenu replaced it.")]
         public InputActionReference m_SummonAction;
+
+        [Tooltip("The summon button is also the grab button, so pressing it while that hand's ray or " +
+                 "hand is on (or already holding) one of these is a grab or resize, not a summon: the " +
+                 "menu is left as it is. Leave empty to use the coordinate system (plot) cube.")]
+        public XRBaseInteractable[] m_GrabPriorityInteractables;
 
         [Header("Placement")]
         [Tooltip("Distance in front of the player's head the menu appears at, in meters.")]
@@ -95,6 +103,10 @@ namespace DataViz
             if (m_IsTransitioning)
                 return; // ignore repeated presses mid-transition rather than queuing/stacking them
 
+            // Grabbing/resizing the plot takes precedence over the menu.
+            if (IsPressAimedAtGrabPriorityInteractable(ctx))
+                return;
+
             if (m_MenuActive)
             {
                 StartCoroutine(DismissMenu());
@@ -104,6 +116,56 @@ namespace DataViz
                 StartCoroutine(SummonMenu());
             }
         }
+
+        /// <summary>
+        /// True when an interactor of the hand that pressed the summon button is hovering
+        /// (ray or near) or selecting one of the grab-priority interactables. Hover is checked
+        /// as well as select because the grip's select may only register after this callback.
+        /// </summary>
+        private bool IsPressAimedAtGrabPriorityInteractable(InputAction.CallbackContext ctx)
+        {
+            if (m_GrabPriorityInteractables == null || m_GrabPriorityInteractables.Length == 0)
+            {
+                var plot = FindAnyObjectByType<CoordinateSystemInteractable>(FindObjectsInactive.Include);
+                var plotGrab = plot != null ? plot.GetComponent<XRBaseInteractable>() : null;
+                m_GrabPriorityInteractables = plotGrab != null ? new[] { plotGrab } : new XRBaseInteractable[0];
+            }
+
+            InteractorHandedness pressedHand = HandednessOf(ctx.control);
+
+            foreach (XRBaseInteractable interactable in m_GrabPriorityInteractables)
+            {
+                if (interactable == null || !interactable.isActiveAndEnabled)
+                    continue;
+
+                foreach (var interactor in interactable.interactorsHovering)
+                    if (IsSameHand(interactor, pressedHand))
+                        return true;
+
+                foreach (var interactor in interactable.interactorsSelecting)
+                    if (IsSameHand(interactor, pressedHand))
+                        return true;
+            }
+
+            return false;
+        }
+
+        private static InteractorHandedness HandednessOf(InputControl control)
+        {
+            if (control?.device == null)
+                return InteractorHandedness.None;
+            if (control.device.usages.Contains(UnityEngine.InputSystem.CommonUsages.LeftHand))
+                return InteractorHandedness.Left;
+            if (control.device.usages.Contains(UnityEngine.InputSystem.CommonUsages.RightHand))
+                return InteractorHandedness.Right;
+            return InteractorHandedness.None;
+        }
+
+        // Unknown handedness on either side counts as a match, so the plot still wins.
+        private static bool IsSameHand(IXRInteractor interactor, InteractorHandedness pressedHand) =>
+            pressedHand == InteractorHandedness.None ||
+            interactor.handedness == InteractorHandedness.None ||
+            interactor.handedness == pressedHand;
 
         private IEnumerator SummonMenu()
         {

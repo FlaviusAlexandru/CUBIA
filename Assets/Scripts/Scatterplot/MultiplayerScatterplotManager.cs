@@ -495,7 +495,20 @@ namespace DataViz
         {
             public int ColumnIndex = -1;
             public string Label = "";
+            // Value ranges on a numeric or DateTime column. When there are any, the entry keeps the
+            // rows whose value lies in at least one range (Label is then empty and ignored).
+            // Set only through RequestSetFilterRangesRpc, which validates the list.
+            public List<FilterRange> Ranges = new();
         }
+
+        [Serializable]
+        public class FilterRange
+        {
+            public float min;
+            public float max;
+        }
+
+        public const int MaxFilterRanges = 5;
 
         [Header("Filtering Settings")]
         public List<FilterEntry> Filters = new();
@@ -1015,6 +1028,7 @@ namespace DataViz
                 // fall back to "Any value" (empty Label).
                 Filters[0].ColumnIndex = columnIndex;
                 Filters[0].Label = "";
+                Filters[0].Ranges.Clear(); // ranges are in the old column's units
             }
 
             OnPlotSettingsChanged?.Invoke();
@@ -1029,6 +1043,7 @@ namespace DataViz
                 return;
 
             Filters[0].Label = filterLabel ?? "";
+            Filters[0].Ranges.Clear(); // a picked value replaces any ranges
             OnPlotSettingsChanged?.Invoke();
         }
 
@@ -1042,7 +1057,7 @@ namespace DataViz
                 return false;
 
             filterLabel ??= "";
-            if (Filters.Exists(f => f.ColumnIndex == columnIndex && f.Label == filterLabel))
+            if (Filters.Exists(f => f.ColumnIndex == columnIndex && f.Label == filterLabel && f.Ranges.Count == 0))
                 return false;
 
             if (ForwardToHost(PlotOp.AddFilter, columnIndex, text: filterLabel)) return true;
@@ -1069,6 +1084,71 @@ namespace DataViz
 
             Filters.Clear();
             OnPlotSettingsChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Range editor path: sets the value ranges of the FIRST filter entry (the Filter Column
+        /// dropdown's), which must be on a numeric or DateTime column. A row then passes that entry
+        /// when its value lies in any range (both ends inclusive); overlapping ranges are fine. An
+        /// empty list goes back to "Any value". Returns whether the ranges were applied.
+        /// </summary>
+        public bool RequestSetFilterRangesRpc(List<FilterRange> ranges)
+        {
+            if (!ValidateFilterRanges(ranges, out string error))
+            {
+                Debug.LogWarning($"[MultiplayerScatterplotManager] Filter ranges rejected: {error}");
+                return false;
+            }
+
+            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForFilterRanges(ranges))) return true;
+
+            DatasetColumn column = Filters.Count > 0 ? LoadedDataset?.GetColumn(Filters[0].ColumnIndex) : null;
+            if (column == null || !column.IsNumeric)
+            {
+                Debug.LogWarning("[MultiplayerScatterplotManager] Filter ranges need a numeric or DateTime filter column.");
+                return false;
+            }
+
+            FilterEntry entry = Filters[0];
+            entry.Label = "";
+            entry.Ranges = new List<FilterRange>();
+            if (ranges != null)
+            {
+                foreach (FilterRange range in ranges)
+                    entry.Ranges.Add(new FilterRange { min = range.min, max = range.max });
+            }
+            entry.Ranges.Sort((a, b) => a.min != b.min ? a.min.CompareTo(b.min) : a.max.CompareTo(b.max));
+
+            OnPlotSettingsChanged?.Invoke();
+            return true;
+        }
+
+        /// <summary>At most MaxFilterRanges ranges, each with finite bounds and min &lt;= max.</summary>
+        public static bool ValidateFilterRanges(List<FilterRange> ranges, out string error)
+        {
+            error = null;
+            if (ranges == null)
+                return true;
+            if (ranges.Count > MaxFilterRanges)
+            {
+                error = $"{ranges.Count} ranges, at most {MaxFilterRanges} allowed";
+                return false;
+            }
+            for (int i = 0; i < ranges.Count; i++)
+            {
+                FilterRange r = ranges[i];
+                if (r == null || !float.IsFinite(r.min) || !float.IsFinite(r.max))
+                {
+                    error = $"range {i} is missing or has a non-finite bound";
+                    return false;
+                }
+                if (r.min > r.max)
+                {
+                    error = $"range {i} has min {r.min} above max {r.max}";
+                    return false;
+                }
+            }
+            return true;
         }
 
         public void RequestSizeColumnRpc(int columnIndex)

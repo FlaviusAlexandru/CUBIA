@@ -22,9 +22,19 @@ namespace DataViz
     /// ScatterplotVisualizer.SetGlyphPreviewHiddenIntervals. Ranges may share one edge value.
     /// With Prevent overlap on, a handle stops at the edge of the neighbouring range.
     /// The draft resets when the glyph column changes or a dataset loads.
+    ///
+    /// With Target = Filter the same editor sets value ranges on the first filter entry (the
+    /// Filter Column dropdown's) instead: rows have no shape picker, ranges may overlap (a row
+    /// passes when it lies in any range), there is no overlap preview, and Confirm calls
+    /// RequestSetFilterRangesRpc.
     /// </summary>
     public class GlyphRangeEditor : MonoBehaviour
     {
+        public enum RangeTarget { Glyph, Filter }
+
+        [Tooltip("Glyph: shapes per value range of the glyph column. Filter: value ranges on the first filter entry.")]
+        public RangeTarget m_Target = RangeTarget.Glyph;
+
         [Header("References")]
         public MultiplayerScatterplotManager m_Manager;
         [Tooltip("Plot whose overlap preview this editor drives. Leave empty to use the scene's visualizer.")]
@@ -140,7 +150,7 @@ namespace DataViz
         private void OnDisable()
         {
             // The menu was closed: don't leave points hidden behind a draft nobody can see.
-            if (m_Visualizer != null)
+            if (!IsFilter && m_Visualizer != null)
                 m_Visualizer.SetGlyphPreviewHiddenIntervals(null);
         }
 
@@ -153,7 +163,27 @@ namespace DataViz
             }
         }
 
-        public bool PreventOverlap => m_PreventOverlapToggle != null && m_PreventOverlapToggle.isOn;
+        private bool IsFilter => m_Target == RangeTarget.Filter;
+
+        // Filter ranges may overlap, so Prevent overlap only applies to glyphs.
+        public bool PreventOverlap => !IsFilter && m_PreventOverlapToggle != null && m_PreventOverlapToggle.isOn;
+
+        private int MaxRanges => IsFilter ? MultiplayerScatterplotManager.MaxFilterRanges : MultiplayerScatterplotManager.MaxGlyphRanges;
+
+        /// <summary>Column the edited ranges belong to.</summary>
+        private int TargetColumn => m_Manager == null ? -1 : IsFilter ? m_Manager.FilterColumnIndex : m_Manager.GlyphColumnIndex;
+
+        /// <summary>The manager's committed ranges, as GlyphRange (glyphIndex 0 for filters).</summary>
+        private List<MultiplayerScatterplotManager.GlyphRange> CommittedRanges()
+        {
+            if (m_Manager == null)
+                return null;
+            if (!IsFilter)
+                return m_Manager.GlyphRanges;
+            if (m_Manager.Filters.Count == 0)
+                return new List<MultiplayerScatterplotManager.GlyphRange>();
+            return m_Manager.Filters[0].Ranges.ConvertAll(r => new MultiplayerScatterplotManager.GlyphRange { glyphIndex = 0, min = r.min, max = r.max });
+        }
 
         #region Manager sync
 
@@ -162,13 +192,13 @@ namespace DataViz
             if (m_Manager == null)
                 return;
 
-            bool contextChanged = m_Manager.LoadedDataset != m_Dataset || m_Manager.GlyphColumnIndex != m_Column;
-            bool committedChanged = !SameRanges(m_Manager.GlyphRanges, m_CommittedSnapshot);
+            bool contextChanged = m_Manager.LoadedDataset != m_Dataset || TargetColumn != m_Column;
+            bool committedChanged = !SameRanges(CommittedRanges(), m_CommittedSnapshot);
 
             if (contextChanged || (committedChanged && !m_DraftDirty))
                 ResetDraftFromCommitted();
             else if (committedChanged)
-                m_CommittedSnapshot = CopyRanges(m_Manager.GlyphRanges); // keep the user's draft
+                m_CommittedSnapshot = CopyRanges(CommittedRanges()); // keep the user's draft
         }
 
         /// <summary>Throws away the draft and shows the manager's committed ranges again.</summary>
@@ -182,7 +212,7 @@ namespace DataViz
             m_Draft.Clear();
 
             m_Dataset = m_Manager != null ? m_Manager.LoadedDataset : null;
-            m_Column = m_Manager != null ? m_Manager.GlyphColumnIndex : -1;
+            m_Column = TargetColumn;
 
             DatasetColumn column = (m_Dataset != null && m_Column >= 0 && m_Column < m_Dataset.ColumnCount)
                 ? m_Dataset.Columns[m_Column]
@@ -195,11 +225,11 @@ namespace DataViz
                 m_Max = Mathf.Max(column.MinValue, column.MaxValue);
                 ResolveValueFormat(column);
 
-                foreach (MultiplayerScatterplotManager.GlyphRange range in m_Manager.GlyphRanges)
+                foreach (MultiplayerScatterplotManager.GlyphRange range in CommittedRanges())
                     AddDraftRow(range.glyphIndex, range.min, range.max);
             }
 
-            m_CommittedSnapshot = CopyRanges(m_Manager != null ? m_Manager.GlyphRanges : null);
+            m_CommittedSnapshot = CopyRanges(CommittedRanges());
             m_DraftDirty = false;
             RefreshAll();
         }
@@ -210,10 +240,10 @@ namespace DataViz
 
         private void OnAddGlyphClicked()
         {
-            if (!m_ColumnIsRangeable || m_Draft.Count >= MultiplayerScatterplotManager.MaxGlyphRanges)
+            if (!m_ColumnIsRangeable || m_Draft.Count >= MaxRanges)
                 return;
 
-            int glyph = FirstUnusedGlyph(null);
+            int glyph = IsFilter ? 0 : FirstUnusedGlyph(null);
             if (glyph < 0)
                 return;
 
@@ -242,7 +272,10 @@ namespace DataViz
             // The manager raises OnPlotSettingsChanged; with the draft no longer dirty that
             // rebuilds the rows from the committed (sorted) ranges.
             m_DraftDirty = false;
-            if (!m_Manager.RequestSetGlyphRangesRpc(ranges))
+            bool applied = IsFilter
+                ? m_Manager.RequestSetFilterRangesRpc(ranges.ConvertAll(r => new MultiplayerScatterplotManager.FilterRange { min = r.min, max = r.max }))
+                : m_Manager.RequestSetGlyphRangesRpc(ranges);
+            if (!applied)
             {
                 m_DraftDirty = true;
                 RefreshAll();
@@ -264,6 +297,9 @@ namespace DataViz
             row.gameObject.SetActive(true);
             row.SetBounds(m_Min, m_Max);
             row.SetValues(Mathf.Clamp(low, m_Min, m_Max), Mathf.Clamp(high, m_Min, m_Max));
+
+            if (IsFilter && row.m_ShapeDropdown != null)
+                row.m_ShapeDropdown.gameObject.SetActive(false);
 
             row.ShapeChanged += OnRowShapeChanged;
             row.LowChanged += OnRowLowChanged;
@@ -486,7 +522,7 @@ namespace DataViz
                 d.Overlapping = false;
 
             List<Vector2> hidden = new List<Vector2>();
-            for (int i = 0; i < m_Draft.Count; i++)
+            for (int i = 0; !IsFilter && i < m_Draft.Count; i++)
             {
                 for (int j = i + 1; j < m_Draft.Count; j++)
                 {
@@ -513,13 +549,16 @@ namespace DataViz
                 RectTransform rect = row.transform as RectTransform;
                 rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -i * m_RowSpacing);
 
-                List<int> options = new List<int>();
-                for (int glyph = 1; glyph < ScatterplotUI.k_GlyphShapeNames.Length; glyph++)
+                if (!IsFilter)
                 {
-                    if (glyph == d.GlyphIndex || !m_Draft.Exists(o => o != d && o.GlyphIndex == glyph))
-                        options.Add(glyph);
+                    List<int> options = new List<int>();
+                    for (int glyph = 1; glyph < ScatterplotUI.k_GlyphShapeNames.Length; glyph++)
+                    {
+                        if (glyph == d.GlyphIndex || !m_Draft.Exists(o => o != d && o.GlyphIndex == glyph))
+                            options.Add(glyph);
+                    }
+                    row.SetShapeOptions(options, d.GlyphIndex);
                 }
-                row.SetShapeOptions(options, d.GlyphIndex);
 
                 row.SetColors(d.Overlapping ? m_OverlapTrackColor : m_TrackColor,
                               d.Overlapping ? m_OverlapFillColor : m_FillColor);
@@ -534,7 +573,7 @@ namespace DataViz
             }
 
             SetButtonEnabled(m_AddGlyphButton,
-                showRanges && m_Draft.Count < MultiplayerScatterplotManager.MaxGlyphRanges && FirstUnusedGlyph(null) >= 0);
+                showRanges && m_Draft.Count < MaxRanges && (IsFilter || FirstUnusedGlyph(null) >= 0));
             SetButtonEnabled(m_ConfirmButton, showRanges && m_DraftDirty && !DraftHasOverlap);
             SetButtonEnabled(m_CancelButton, showRanges && m_DraftDirty);
         }
@@ -561,7 +600,7 @@ namespace DataViz
 
         private void ApplyPreview()
         {
-            if (m_Visualizer == null)
+            if (IsFilter || m_Visualizer == null)
                 return;
             m_Visualizer.SetGlyphPreviewHiddenIntervals(isActiveAndEnabled && m_ColumnIsRangeable ? m_PreviewHidden : null);
         }

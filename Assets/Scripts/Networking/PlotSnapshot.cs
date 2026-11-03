@@ -31,6 +31,10 @@ namespace DataViz.Networking
 
         public int[] FilterColumns = Array.Empty<int>();
         public string[] FilterLabels = Array.Empty<string>();
+        // Filter value ranges, flattened: entry i owns FilterRangeCounts[i] consecutive (min, max) pairs.
+        public int[] FilterRangeCounts = Array.Empty<int>();
+        public float[] FilterRangeMins = Array.Empty<float>();
+        public float[] FilterRangeMaxs = Array.Empty<float>();
 
         public int GlyphColumn = -1;
         public string[] GlyphLabels = Array.Empty<string>();
@@ -58,6 +62,9 @@ namespace DataViz.Networking
             SizeColumn = m.SizeColumnIndex,
             FilterColumns = m.Filters.Select(f => f.ColumnIndex).ToArray(),
             FilterLabels = m.Filters.Select(f => f.Label ?? "").ToArray(),
+            FilterRangeCounts = m.Filters.Select(f => f.Ranges.Count).ToArray(),
+            FilterRangeMins = m.Filters.SelectMany(f => f.Ranges).Select(r => r.min).ToArray(),
+            FilterRangeMaxs = m.Filters.SelectMany(f => f.Ranges).Select(r => r.max).ToArray(),
             GlyphColumn = m.GlyphColumnIndex,
             GlyphLabels = m.GlyphAssignments.Select(a => a.Label ?? "").ToArray(),
             GlyphIndices = m.GlyphAssignments.Select(a => a.GlyphIndex).ToArray(),
@@ -82,8 +89,15 @@ namespace DataViz.Networking
             m.SizeColumnIndex = SizeColumn;
 
             m.Filters.Clear();
+            int rangeCursor = 0;
             for (int i = 0; i < FilterColumns.Length; i++)
-                m.Filters.Add(new Manager.FilterEntry { ColumnIndex = FilterColumns[i], Label = FilterLabels[i] });
+            {
+                var entry = new Manager.FilterEntry { ColumnIndex = FilterColumns[i], Label = FilterLabels[i] };
+                int count = i < FilterRangeCounts.Length ? FilterRangeCounts[i] : 0;
+                for (int k = 0; k < count && rangeCursor < FilterRangeMins.Length; k++, rangeCursor++)
+                    entry.Ranges.Add(new Manager.FilterRange { min = FilterRangeMins[rangeCursor], max = FilterRangeMaxs[rangeCursor] });
+                m.Filters.Add(entry);
+            }
 
             m.GlyphColumnIndex = GlyphColumn;
             m.GlyphAssignments.Clear();
@@ -112,6 +126,8 @@ namespace DataViz.Networking
             ColourColumn == o.ColourColumn && TimeColumn == o.TimeColumn &&
             PointSize == o.PointSize && SizeMapped == o.SizeMapped && SizeColumn == o.SizeColumn &&
             FilterColumns.SequenceEqual(o.FilterColumns) && FilterLabels.SequenceEqual(o.FilterLabels) &&
+            FilterRangeCounts.SequenceEqual(o.FilterRangeCounts) &&
+            FilterRangeMins.SequenceEqual(o.FilterRangeMins) && FilterRangeMaxs.SequenceEqual(o.FilterRangeMaxs) &&
             GlyphColumn == o.GlyphColumn &&
             GlyphLabels.SequenceEqual(o.GlyphLabels) && GlyphIndices.SequenceEqual(o.GlyphIndices) &&
             RangeGlyphs.SequenceEqual(o.RangeGlyphs) && RangeMins.SequenceEqual(o.RangeMins) && RangeMaxs.SequenceEqual(o.RangeMaxs) &&
@@ -138,6 +154,9 @@ namespace DataViz.Networking
             s.SerializeValue(ref SizeColumn);
             Wire.Array(s, ref FilterColumns);
             Wire.Strings(s, ref FilterLabels);
+            Wire.Array(s, ref FilterRangeCounts);
+            Wire.Array(s, ref FilterRangeMins);
+            Wire.Array(s, ref FilterRangeMaxs);
             s.SerializeValue(ref GlyphColumn);
             Wire.Strings(s, ref GlyphLabels);
             Wire.Array(s, ref GlyphIndices);
@@ -168,6 +187,7 @@ namespace DataViz.Networking
         SizeColumn, SizeMapped,
         GlyphColumn, GlyphAssignment, GlyphRanges,
         Shuffle, ShuffleBackward, ShuffleForward,
+        FilterRanges,
     }
 
     /// <summary>
@@ -210,10 +230,25 @@ namespace DataViz.Networking
             return request;
         }
 
+        /// <summary>Filter ranges travel in RangeMins/RangeMaxs (RangeGlyphs stays empty).</summary>
+        public static PlotRequest ForFilterRanges(List<Manager.FilterRange> ranges)
+        {
+            var request = new PlotRequest(PlotOp.FilterRanges);
+            if (ranges != null)
+            {
+                request.RangeMins = ranges.Select(r => r.min).ToArray();
+                request.RangeMaxs = ranges.Select(r => r.max).ToArray();
+            }
+            return request;
+        }
+
         public static PlotRequest ForShuffle(int lockedFieldMask, IEnumerable<string> blacklist) =>
             new PlotRequest(PlotOp.Shuffle, lockedFieldMask, text: string.Join("\n", blacklist));
 
         public List<Manager.GlyphRange> GlyphRanges => PlotSnapshot.ToGlyphRanges(RangeGlyphs, RangeMins, RangeMaxs);
+
+        public List<Manager.FilterRange> FilterRanges =>
+            RangeMins.Zip(RangeMaxs, (min, max) => new Manager.FilterRange { min = min, max = max }).ToList();
 
         public string[] Blacklist => string.IsNullOrEmpty(Text) ? Array.Empty<string>() : Text.Split('\n');
 

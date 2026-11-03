@@ -28,6 +28,9 @@ namespace DataViz
 
         public bool IsDocked => m_IsDocked;
 
+        // [Multiplayer] Raised at the end of ResetPosition(), so NetworkPlotTransform can sync the reset.
+        public event System.Action OnResetPerformed;
+
         private XRGrabInteractable m_GrabInteractable;
         private XRGeneralGrabTransformer m_GrabTransformer;
 
@@ -131,6 +134,7 @@ namespace DataViz
             m_IsDocked = true;
 
             Debug.Log("[CoordinateSystemInteractable] Reset to starting position.");
+            OnResetPerformed?.Invoke(); // [Multiplayer]
         }
 
         private void ReleaseFromInteractors()

@@ -45,6 +45,12 @@ namespace DataViz
 
         public bool IsPinned => m_IsPinned;
 
+        // [Multiplayer] Dataset row of the pinned point, or -1 when nothing is pinned (read by PinnedTooltipSync).
+        public int PinnedRowIndex => m_IsPinned ? ResolveRowIndex(m_PinnedPointIndex) : -1;
+
+        // [Multiplayer] Bumped whenever SetPointData replaces the plotted points, so cached lookups can refresh.
+        public int PointDataVersion { get; private set; }
+
         private GameObject m_ActiveTooltip;
         private TextMeshProUGUI m_TooltipText;
         private Camera m_MainCamera;
@@ -105,6 +111,19 @@ namespace DataViz
             m_PointColors = colors;
             m_PointSize = pointSize;
             m_RowIndices = rowIndices;
+            PointDataVersion++; // [Multiplayer]
+        }
+
+        /// <summary>
+        /// [Multiplayer] Plot-local position of a dataset row if it is currently plotted (used to show
+        /// other players' pinned points). Linear search: call it when the row or PointDataVersion changes.
+        /// </summary>
+        public bool TryGetRowLocalPosition(int rowIndex, out Vector3 localPosition)
+        {
+            int pointIndex = m_RowIndices != null ? m_RowIndices.IndexOf(rowIndex) : rowIndex;
+            bool found = pointIndex >= 0 && pointIndex < m_PointPositions.Count;
+            localPosition = found ? m_PointPositions[pointIndex] : default;
+            return found;
         }
 
         /// <summary>

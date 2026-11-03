@@ -207,6 +207,7 @@ namespace DataViz.Networking
                 case PlotOp.Shuffle: m.RequestShuffleColumnsForClient(r.Int, r.Blacklist); break;
                 case PlotOp.ShuffleBackward: m.RequestShuffleBackwardRpc(); break;
                 case PlotOp.ShuffleForward: m.RequestShuffleForwardRpc(); break;
+                case PlotOp.FilterRanges: m.RequestSetFilterRangesRpc(r.FilterRanges); break;
             }
         }
 

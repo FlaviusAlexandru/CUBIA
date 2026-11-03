@@ -986,6 +986,8 @@ namespace DataViz
             public DatasetColumn Column;
             public List<string> CategoryTable;
             public string Label;
+            // Value ranges (x = min, y = max, inclusive); when any, they replace Label.
+            public List<Vector2> Ranges;
         }
 
         /// <summary>Resolves m_Manager.Filters against the dataset, skipping out-of-range columns.</summary>
@@ -1013,7 +1015,8 @@ namespace DataViz
                     Column = column,
                     // Snapshot the categorical lookup table once per regenerate rather than per-row.
                     CategoryTable = column.IsCategorical ? new List<string>(column.UniqueValues) : null,
-                    Label = entry.Label ?? ""
+                    Label = entry.Label ?? "",
+                    Ranges = entry.Ranges.ConvertAll(r => new Vector2(r.min, r.max))
                 });
             }
 
@@ -1031,7 +1034,7 @@ namespace DataViz
 
             foreach (ActiveFilter filter in filters)
             {
-                if (RowMatchesFilter(dataset, rowIndex, filter.ColumnIndex, filter.Column, filter.CategoryTable, filter.Label))
+                if (RowMatchesFilter(dataset, rowIndex, filter))
                     return true;
             }
 
@@ -1050,6 +1053,28 @@ namespace DataViz
             float norm = dataset.GetNormalizedValue(rowIndex, sizeCol);
             return baseSize * Mathf.Lerp(MultiplayerScatterplotManager.SizeMappedMinScale,
                                          MultiplayerScatterplotManager.SizeMappedMaxScale, norm);
+        }
+
+        /// <summary>
+        /// One filter entry: with ranges, the row's value must lie in at least one of them (a row
+        /// with no value never does); otherwise the label rule below.
+        /// </summary>
+        public bool RowMatchesFilter(DatasetColumnar dataset, int rowIndex, ActiveFilter filter)
+        {
+            if (filter.Ranges != null && filter.Ranges.Count > 0 && filter.Column.IsNumeric)
+            {
+                if (!dataset.HasValue(rowIndex, filter.ColumnIndex))
+                    return false;
+                float value = dataset.GetNumericValue(rowIndex, filter.ColumnIndex);
+                foreach (Vector2 range in filter.Ranges)
+                {
+                    if (value >= range.x && value <= range.y)
+                        return true;
+                }
+                return false;
+            }
+
+            return RowMatchesFilter(dataset, rowIndex, filter.ColumnIndex, filter.Column, filter.CategoryTable, filter.Label);
         }
 
         public bool RowMatchesFilter(

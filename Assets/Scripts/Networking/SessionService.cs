@@ -1,15 +1,17 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Unity.Netcode;
+using Unity.Services.Multiplayer;
 using UnityEngine;
 
 namespace DataViz.Networking
 {
     /// <summary>
-    /// STUB — owner: session/state agent. Public API below is the contract other agents compile
-    /// against; keep every signature. Wraps create/join/leave through Unity Multiplayer Services
-    /// sessions with Relay, and drives NGO's NetworkManager (host or client).
-    /// The app must work offline exactly as before until someone hosts.
+    /// Create/join/leave through Unity Multiplayer Services sessions with Relay; the session drives
+    /// NGO's NetworkManager.Singleton (host or client). Players and LastChangedBy are fed by
+    /// NetworkScatterplotState. Errors never throw into the UI: they arrive as OnSessionMessage.
+    /// The app works offline exactly as before until someone hosts.
     /// </summary>
     public class SessionService : MonoBehaviour
     {
@@ -45,17 +47,249 @@ namespace DataViz.Networking
         /// <summary>User-facing one-line messages: "Session ended", connection errors, dataset mismatch...</summary>
         public event Action<string> OnSessionMessage;
 
+        const string k_ModeProperty = "mode";
+        const string k_RecentCodesKey = "cubia.mp.recentCodes";
+        const int k_MaxRecentCodes = 5;
+
+        ISession m_Session;
+        NetworkManager m_Network; // the NetworkManager whose OnClientStopped we listen to
+        bool m_Leaving;           // set while we leave on purpose, so the resulting disconnect isn't "Session ended"
+
         void Awake()
         {
             if (Instance != null && Instance != this) { Destroy(gameObject); return; }
             Instance = this;
+            LoadRecentCodes();
         }
 
-        public Task HostAsync(SessionMode mode) { OnSessionMessage?.Invoke("Multiplayer not implemented yet"); return Task.CompletedTask; }
-        public Task JoinAsync(string joinCode) { OnSessionMessage?.Invoke("Multiplayer not implemented yet"); return Task.CompletedTask; }
-        public Task LeaveAsync() => Task.CompletedTask;
+        void OnDestroy()
+        {
+            if (Instance != this) return;
+            DetachSession();
+            Instance = null;
+        }
 
-        // Silence unused-event warnings in the stub.
-        void RaiseAll() { OnStateChanged?.Invoke(); OnPlayersChanged?.Invoke(); }
+        public async Task HostAsync(SessionMode mode)
+        {
+            if (!CanStart()) return;
+            SetState(SessionState.Connecting, mode, "", "");
+
+            try
+            {
+                await UgsBootstrap.EnsureSignedInAsync();
+                var options = new SessionOptions
+                {
+                    MaxPlayers = MaxPlayers,
+                    IsPrivate = true, // joinable by code only, never listed
+                    SessionProperties =
+                    {
+                        [k_ModeProperty] = new SessionProperty(((int)mode).ToString(), VisibilityPropertyOptions.Member),
+                    },
+                }.WithRelayNetwork();
+
+                IHostSession session = await MultiplayerService.Instance.CreateSessionAsync(options);
+                AttachSession(session, SessionState.Hosting, mode);
+            }
+            catch (Exception e)
+            {
+                await FailAsync("Couldn't start a session", e);
+            }
+        }
+
+        public async Task JoinAsync(string joinCode)
+        {
+            string code = (joinCode ?? "").Trim().ToUpperInvariant();
+            if (code.Length == 0) { PostMessage("Enter a join code"); return; }
+            if (!CanStart()) return;
+            SetState(SessionState.Connecting, Mode, "", "");
+
+            try
+            {
+                await UgsBootstrap.EnsureSignedInAsync();
+                ISession session = await MultiplayerService.Instance.JoinSessionByCodeAsync(code, new JoinSessionOptions());
+                RememberCode(code);
+                AttachSession(session, SessionState.Client, ReadMode(session));
+            }
+            catch (Exception e)
+            {
+                await FailAsync($"Couldn't join {code}", e);
+            }
+        }
+
+        /// <summary>Leaves (a host ends the session for everyone). The local plot keeps its current state.</summary>
+        public async Task LeaveAsync()
+        {
+            if (!IsInSession || m_Leaving) return;
+
+            m_Leaving = true;
+            ISession session = DetachSession();
+            try
+            {
+                if (session.IsHost)
+                    await session.AsHost().DeleteAsync(); // clients get Deleted / a disconnect → "Session ended"
+                else
+                    await session.LeaveAsync();
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[SessionService] Leaving the session failed: {e.Message}");
+            }
+            finally
+            {
+                ShutdownNetwork();
+                m_Leaving = false;
+                SetOffline();
+            }
+        }
+
+        // ---------------------------------------------------------------- fed by NetworkScatterplotState
+
+        internal void SetPlayers(IReadOnlyList<PlayerInfo> players)
+        {
+            m_Players.Clear();
+            m_Players.AddRange(players);
+            OnPlayersChanged?.Invoke();
+        }
+
+        internal void SetLastChangedBy(string playerName)
+        {
+            playerName ??= "";
+            if (LastChangedBy == playerName) return;
+            LastChangedBy = playerName;
+            OnPlayersChanged?.Invoke();
+        }
+
+        internal void PostMessage(string message) => OnSessionMessage?.Invoke(message);
+
+        // ---------------------------------------------------------------- session lifecycle
+
+        bool CanStart()
+        {
+            if (State != SessionState.Offline) { PostMessage("Already in a session"); return false; }
+            if (NetworkManager.Singleton == null) { PostMessage("Multiplayer is not set up in this scene"); return false; }
+            return true;
+        }
+
+        void AttachSession(ISession session, SessionState state, SessionMode mode)
+        {
+            m_Session = session;
+            m_Session.Deleted += OnSessionLost;
+            m_Session.RemovedFromSession += OnSessionLost;
+            m_Network = NetworkManager.Singleton;
+            m_Network.OnClientStopped += OnNetworkStopped; // also raised on the host when it stops
+            SetState(state, mode, session.Code ?? "", session.Id ?? "");
+        }
+
+        /// <summary>Unsubscribes from the current session and returns it (null if none).</summary>
+        ISession DetachSession()
+        {
+            ISession session = m_Session;
+            if (session != null)
+            {
+                session.Deleted -= OnSessionLost;
+                session.RemovedFromSession -= OnSessionLost;
+            }
+            if (m_Network != null)
+                m_Network.OnClientStopped -= OnNetworkStopped;
+            m_Session = null;
+            m_Network = null;
+            return session;
+        }
+
+        void OnSessionLost() => _ = EndAsync("Session ended");
+        void OnNetworkStopped(bool wasHost) => _ = EndAsync("Session ended");
+
+        // The host left, the connection dropped or we were removed: back to offline, keeping the plot as it is.
+        async Task EndAsync(string message)
+        {
+            if (m_Leaving || !IsInSession) return;
+
+            ISession session = DetachSession();
+            SetOffline();
+            PostMessage(message);
+
+            try
+            {
+                if (session != null) await session.LeaveAsync(); // stops the session's network handler
+            }
+            catch (Exception e)
+            {
+                Debug.Log($"[SessionService] Cleanup after session end: {e.Message}");
+            }
+            ShutdownNetwork();
+        }
+
+        async Task FailAsync(string what, Exception e)
+        {
+            Debug.LogWarning($"[SessionService] {what}: {e}");
+            ISession session = DetachSession();
+            try
+            {
+                if (session != null) await session.LeaveAsync();
+            }
+            catch (Exception cleanup)
+            {
+                Debug.Log($"[SessionService] Cleanup after failure: {cleanup.Message}");
+            }
+            ShutdownNetwork();
+            SetOffline();
+            PostMessage($"{what}: {e.Message}");
+        }
+
+        // Normally the session stops NGO itself; this only catches a NetworkManager left running.
+        static void ShutdownNetwork()
+        {
+            NetworkManager network = NetworkManager.Singleton;
+            if (network != null && network.IsListening && !network.ShutdownInProgress)
+                network.Shutdown();
+        }
+
+        static SessionMode ReadMode(ISession session) =>
+            session.Properties.TryGetValue(k_ModeProperty, out SessionProperty property) &&
+            int.TryParse(property.Value, out int value) && Enum.IsDefined(typeof(SessionMode), value)
+                ? (SessionMode)value
+                : SessionMode.Remote;
+
+        void SetOffline()
+        {
+            SetState(SessionState.Offline, Mode, "", "");
+            if (m_Players.Count > 0 || LastChangedBy.Length > 0)
+            {
+                m_Players.Clear();
+                LastChangedBy = "";
+                OnPlayersChanged?.Invoke();
+            }
+        }
+
+        void SetState(SessionState state, SessionMode mode, string joinCode, string sessionId)
+        {
+            if (State == state && Mode == mode && JoinCode == joinCode && SessionId == sessionId) return;
+            State = state;
+            Mode = mode;
+            JoinCode = joinCode;
+            SessionId = sessionId;
+            OnStateChanged?.Invoke();
+        }
+
+        // ---------------------------------------------------------------- recent codes
+
+        void LoadRecentCodes()
+        {
+            m_RecentCodes.Clear();
+            foreach (string code in PlayerPrefs.GetString(k_RecentCodesKey, "").Split(','))
+            {
+                if (code.Length > 0 && m_RecentCodes.Count < k_MaxRecentCodes) m_RecentCodes.Add(code);
+            }
+        }
+
+        void RememberCode(string code)
+        {
+            m_RecentCodes.Remove(code);
+            m_RecentCodes.Insert(0, code);
+            if (m_RecentCodes.Count > k_MaxRecentCodes)
+                m_RecentCodes.RemoveRange(k_MaxRecentCodes, m_RecentCodes.Count - k_MaxRecentCodes);
+            PlayerPrefs.SetString(k_RecentCodesKey, string.Join(",", m_RecentCodes));
+            PlayerPrefs.Save();
+        }
     }
 }

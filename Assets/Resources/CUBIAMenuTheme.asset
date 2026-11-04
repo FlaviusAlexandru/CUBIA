@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2cc9cae4914309e4995689aa4c49c9d2, type: 3}
+  m_Name: CUBIAMenuTheme
+  m_EditorClassIdentifier: Assembly-CSharp::DataViz.Flow.MenuTheme
+  PanelColor: {r: 0.93, g: 0.95, b: 0.98, a: 0.82}
+  PanelOutline: {r: 0.55, g: 0.75, b: 0.95, a: 0.9}
+  Accent: {r: 0.2, g: 0.55, b: 0.95, a: 1}
+  Text: {r: 0.1, g: 0.13, b: 0.18, a: 1}
+  TextMuted: {r: 0.35, g: 0.4, b: 0.48, a: 1}
+  IconTint: {r: 0.15, g: 0.4, b: 0.75, a: 1}
+  TileActiveColor: {r: 1, g: 1, b: 1, a: 0.95}
+  Divider: {r: 0.1, g: 0.13, b: 0.18, a: 0.18}
+  PanelSprite: {fileID: 21300000, guid: 65d31ca9600c4654e886aa7bab36e94b, type: 3}
+  OutlineSprite: {fileID: 21300000, guid: 58bc8d49e10d1bc40813d8974b8b3a5c, type: 3}
+  Font: {fileID: 11400000, guid: f675742eaf9c20a4f909d78ee7a14fed, type: 2}
+  TitleFontSize: 36
+  BodyFontSize: 22
+  TileSize: {x: 280, y: 190}
+  TileIconSize: 84

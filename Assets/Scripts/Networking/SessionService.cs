@@ -182,6 +182,10 @@ namespace DataViz.Networking
         {
             if (State != SessionState.Offline) { PostMessage("Already in a session"); return false; }
             if (NetworkManager.Singleton == null) { PostMessage("Multiplayer is not set up in this scene"); return false; }
+
+            // Relay runs over WebSockets (see HostAsync); the transport must match on host and joiners alike.
+            if (NetworkManager.Singleton.NetworkConfig.NetworkTransport is Unity.Netcode.Transports.UTP.UnityTransport transport)
+                transport.UseWebSockets = true;
             return true;
         }
 

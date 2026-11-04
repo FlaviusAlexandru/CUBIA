@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using DataViz.Flow;
 using DataViz.Networking;
+using DataViz.Wizard;
 using UnityEngine;
 
 namespace DataViz
@@ -292,190 +294,15 @@ namespace DataViz
             }
         }
 
-        /// <summary>
-        /// Column names excluded from RequestShuffleColumnsRpc's random pool,
-        /// scoped PER DATASET (a blacklist entry only applies to the dataset
-        /// it was set on) and persisted to disk so it survives app restarts,
-        /// not just dataset switches within one session. Deliberately private -
-        /// ScatterplotUI never touched the old public field directly, only
-        /// RequestSetColumnBlacklistedRpc/IsColumnBlacklisted, so this change
-        /// is invisible to the UI layer.
-        /// </summary>
-        private Dictionary<string, HashSet<string>> m_BlacklistByDataset = new();
+        // Bookmarks (per dataset, ordered: the bookmark palette shows its blocks in bookmark order)
+        // and the shuffle blacklist (per dataset; a blacklisted column stays choosable by hand) are
+        // stored by ColumnPrefsStore, which the import wizard writes too. Both getters return
+        // copies; changes are saved back through ColumnPrefsStore.SetBookmarks/SetBlacklist.
+        private HashSet<string> GetBlacklistForCurrentDataset() =>
+            LoadedDataset == null ? new HashSet<string>() : ColumnPrefsStore.GetBlacklist(LoadedDataset.Name);
 
-        // Bookmarks: per-dataset list of bookmarked column names, in the order they were
-        // bookmarked (the bookmark palette shows its blocks in this order). A List rather than
-        // a HashSet so the order survives; RequestSetColumnBookmarkedRpc keeps it duplicate-free.
-        // Persisted as the same BookmarkedColumns JSON list as before, so old files still load.
-        private Dictionary<string, List<string>> m_BookmarksByDataset = new();
-
-        [Serializable]
-        private class DatasetColumnPrefs
-        {
-            public string DatasetName;
-            public List<string> BlacklistedColumns = new();
-        }
-
-        [Serializable]
-        private class ColumnPrefsFile
-        {
-            public List<DatasetColumnPrefs> Datasets = new();
-        }
-
-        // Separate small file for bookmarks
-        [Serializable]
-        private class DatasetBookmarkPrefs
-        {
-            public string DatasetName;
-            public List<string> BookmarkedColumns = new();
-        }
-
-        [Serializable]
-        private class BookmarkPrefsFile
-        {
-            public List<DatasetBookmarkPrefs> Datasets = new();
-        }
-
-        private string ColumnPrefsFilePath => Path.Combine(Application.persistentDataPath, "scatterplot_column_prefs.json");
-        private string BookmarkPrefsFilePath => Path.Combine(Application.persistentDataPath, "scatterplot_bookmark_prefs.json");
-
-        private void LoadColumnPrefs()
-        {
-            try
-            {
-                if (!File.Exists(ColumnPrefsFilePath))
-                    return;
-
-                string json = File.ReadAllText(ColumnPrefsFilePath);
-                ColumnPrefsFile data = JsonUtility.FromJson<ColumnPrefsFile>(json);
-
-                if (data?.Datasets == null)
-                    return;
-
-                foreach (DatasetColumnPrefs entry in data.Datasets)
-                {
-                    m_BlacklistByDataset[entry.DatasetName] = new HashSet<string>(entry.BlacklistedColumns);
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to load column prefs from {ColumnPrefsFilePath}: {e.Message}");
-            }
-        }
-
-        private void SaveColumnPrefs()
-        {
-            try
-            {
-                ColumnPrefsFile data = new ColumnPrefsFile();
-
-                foreach (KeyValuePair<string, HashSet<string>> kvp in m_BlacklistByDataset)
-                {
-                    if (kvp.Value.Count == 0)
-                        continue; // don't bother persisting empty entries
-
-                    data.Datasets.Add(new DatasetColumnPrefs
-                    {
-                        DatasetName = kvp.Key,
-                        BlacklistedColumns = new List<string>(kvp.Value)
-                    });
-                }
-
-                File.WriteAllText(ColumnPrefsFilePath, JsonUtility.ToJson(data, true));
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to save column prefs to {ColumnPrefsFilePath}: {e.Message}");
-            }
-        }
-
-        private void LoadBookmarkPrefs()
-        {
-            try
-            {
-                if (!File.Exists(BookmarkPrefsFilePath))
-                    return;
-
-                string json = File.ReadAllText(BookmarkPrefsFilePath);
-                BookmarkPrefsFile data = JsonUtility.FromJson<BookmarkPrefsFile>(json);
-
-                if (data?.Datasets == null)
-                    return;
-
-                foreach (DatasetBookmarkPrefs entry in data.Datasets)
-                {
-                    List<string> ordered = new List<string>();
-                    foreach (string columnName in entry.BookmarkedColumns)
-                    {
-                        if (!string.IsNullOrEmpty(columnName) && !ordered.Contains(columnName))
-                            ordered.Add(columnName);
-                    }
-                    m_BookmarksByDataset[entry.DatasetName] = ordered;
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to load bookmark prefs from {BookmarkPrefsFilePath}: {e.Message}");
-            }
-        }
-
-        private void SaveBookmarkPrefs()
-        {
-            try
-            {
-                BookmarkPrefsFile data = new BookmarkPrefsFile();
-
-                foreach (KeyValuePair<string, List<string>> kvp in m_BookmarksByDataset)
-                {
-                    if (kvp.Value.Count == 0)
-                        continue;
-
-                    data.Datasets.Add(new DatasetBookmarkPrefs
-                    {
-                        DatasetName = kvp.Key,
-                        BookmarkedColumns = new List<string>(kvp.Value)
-                    });
-                }
-
-                File.WriteAllText(BookmarkPrefsFilePath, JsonUtility.ToJson(data, true));
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to save bookmark prefs to {BookmarkPrefsFilePath}: {e.Message}");
-            }
-        }
-
-        private HashSet<string> GetBlacklistForCurrentDataset()
-        {
-            if (LoadedDataset == null)
-                return new HashSet<string>(); // empty, safe no-op set - nothing to blacklist against
-
-            string key = LoadedDataset.Name;
-
-            if (!m_BlacklistByDataset.TryGetValue(key, out HashSet<string> set))
-            {
-                set = new HashSet<string>();
-                m_BlacklistByDataset[key] = set;
-            }
-
-            return set;
-        }
-
-        private List<string> GetBookmarksForCurrentDataset()
-        {
-            if (LoadedDataset == null)
-                return new List<string>();
-
-            string key = LoadedDataset.Name;
-
-            if (!m_BookmarksByDataset.TryGetValue(key, out List<string> list))
-            {
-                list = new List<string>();
-                m_BookmarksByDataset[key] = list;
-            }
-
-            return list;
-        }
+        private List<string> GetBookmarksForCurrentDataset() =>
+            LoadedDataset == null ? new List<string>() : ColumnPrefsStore.GetBookmarks(LoadedDataset.Name);
 
         //<summary>
         // Filtering will be used to chose a subset of the data to be displayed. Users will be able to chose a column "Filter label" and index/value "Filter Value"
@@ -713,8 +540,6 @@ namespace DataViz
                 return;
             }
 
-            LoadColumnPrefs();
-            LoadBookmarkPrefs();
             LoadShuffleLockPrefs();
         }
 
@@ -729,6 +554,26 @@ namespace DataViz
 
         private void Start()
         {
+            // Launched from the Start scene (import wizard or a default-on-load dataset): load that
+            // dataset, with the wizard's first X/Y/Z (FirstAxisMapping) set before the plot builds.
+            if (!string.IsNullOrEmpty(LaunchContext.DatasetName))
+            {
+                if (LaunchContext.CameFromWizard)
+                {
+                    LaunchContext.CameFromWizard = false; // one-shot: later loads behave as before
+                    int[] axes = FirstAxisMapping.ForDatasetFile(LaunchContext.DatasetName);
+                    if (axes != null)
+                    {
+                        XColumnIndex = axes[0];
+                        YColumnIndex = axes[1];
+                        ZColumnIndex = axes[2];
+                    }
+                }
+
+                LoadLocalDataset(LaunchContext.DatasetName);
+                return;
+            }
+
             // Check for columnar processed datasets first
             string processedDataPath = Path.Combine(Application.streamingAssetsPath, "DataCSV", "ProcessedData");
 
@@ -1385,7 +1230,8 @@ namespace DataViz
                 blacklist.Remove(columnName);
             }
 
-            SaveColumnPrefs();
+            if (LoadedDataset != null)
+                ColumnPrefsStore.SetBlacklist(LoadedDataset.Name, blacklist);
             OnPlotSettingsChanged?.Invoke();
         }
 
@@ -1418,7 +1264,8 @@ namespace DataViz
                 bookmarks.Remove(columnName);
             }
 
-            SaveBookmarkPrefs();
+            if (LoadedDataset != null)
+                ColumnPrefsStore.SetBookmarks(LoadedDataset.Name, bookmarks);
             OnBookmarksChanged?.Invoke();
             OnPlotSettingsChanged?.Invoke();
         }
@@ -1448,6 +1295,16 @@ namespace DataViz
                 return false;
 
             return GetBookmarksForCurrentDataset().Contains(columnName);
+        }
+
+        /// <summary>
+        /// Call after bookmarks or the blacklist were changed through ColumnPrefsStore from outside
+        /// (the import wizard run in place), so the palette and menus refresh.
+        /// </summary>
+        public void NotifyColumnPrefsChanged()
+        {
+            OnBookmarksChanged?.Invoke();
+            OnPlotSettingsChanged?.Invoke();
         }
 
         /// <summary>

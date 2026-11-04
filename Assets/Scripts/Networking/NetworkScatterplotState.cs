@@ -97,6 +97,8 @@ namespace DataViz.Networking
             else
             {
                 m_Plot.OnValueChanged += OnPlotChanged;
+                if (m_Manager != null)
+                    m_Manager.OnDatasetLoaded += OnClientDatasetLoaded;
                 ApplyToManager(m_Plot.Value);
             }
 
@@ -119,6 +121,7 @@ namespace DataViz.Networking
             {
                 m_Manager.OnPlotSettingsChanged -= OnManagerChanged;
                 m_Manager.OnDatasetLoaded -= OnManagerChanged;
+                m_Manager.OnDatasetLoaded -= OnClientDatasetLoaded;
             }
 
             // The manager keeps whatever it shows now: leaving returns to a local copy of the shared state.
@@ -134,6 +137,11 @@ namespace DataViz.Networking
 
         void PublishSnapshot(bool recordChanger)
         {
+            // When NGO loads the data scene this object spawns before the manager's Start has loaded a
+            // dataset; publishing the empty start-up state would only flash "You need …" on clients.
+            if (m_Manager.LoadedDataset == null)
+                return;
+
             PlotSnapshot next = PlotSnapshot.Capture(m_Manager);
             if (next.DatasetName != m_HashedDatasetName)
             {
@@ -214,6 +222,15 @@ namespace DataViz.Networking
         // ---------------------------------------------------------------- client: apply
 
         void OnPlotChanged(PlotSnapshot previous, PlotSnapshot current) => ApplyToManager(current);
+
+        // After an NGO scene load this object spawns before the manager's Start, which then loads its own
+        // start-up dataset over the host's: put the host's plot back whenever the dataset drifts away.
+        void OnClientDatasetLoaded()
+        {
+            PlotSnapshot shared = m_Plot.Value;
+            if (m_Manager.CurrentDatasetName != shared.DatasetName && SharedPlotAuthority.DatasetStatus == DatasetMatch.Match)
+                ApplyToManager(shared);
+        }
 
         void ApplyToManager(PlotSnapshot snapshot)
         {

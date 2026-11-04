@@ -28,6 +28,15 @@ namespace DataViz.Networking
         /// <summary>Stable id of the current session (used e.g. as the Vivox channel name). Empty offline.</summary>
         public string SessionId { get; private set; } = "";
 
+        /// <summary>Dataset the session runs (the host's, as MultiplayerScatterplotManager names it); empty offline or if unknown.</summary>
+        public string SessionDatasetName { get; private set; } = "";
+
+        /// <summary>DatasetHash of the host's dataset file, so joiners can check theirs before the session starts.</summary>
+        public string SessionDatasetHash { get; private set; } = "";
+
+        /// <summary>The host's player name when the session was created; empty offline.</summary>
+        public string HostName { get; private set; } = "";
+
         public bool IsInSession => State == SessionState.Hosting || State == SessionState.Client;
         public bool IsHost => State == SessionState.Hosting;
 
@@ -48,6 +57,9 @@ namespace DataViz.Networking
         public event Action<string> OnSessionMessage;
 
         const string k_ModeProperty = "mode";
+        const string k_DatasetProperty = "dataset";
+        const string k_DatasetHashProperty = "datasetHash";
+        const string k_HostNameProperty = "host";
         const string k_RecentCodesKey = "cubia.mp.recentCodes";
         const int k_MaxRecentCodes = 5;
 
@@ -69,7 +81,10 @@ namespace DataViz.Networking
             Instance = null;
         }
 
-        public async Task HostAsync(SessionMode mode)
+        public Task HostAsync(SessionMode mode) => HostAsync(mode, "");
+
+        /// <summary>Hosts a session that runs datasetName; joiners see it (and whether they have it) before the session starts.</summary>
+        public async Task HostAsync(SessionMode mode, string datasetName)
         {
             if (!CanStart()) return;
             SetState(SessionState.Connecting, mode, "", "");
@@ -81,11 +96,11 @@ namespace DataViz.Networking
                 {
                     MaxPlayers = MaxPlayers,
                     IsPrivate = true, // joinable by code only, never listed
-                    SessionProperties =
-                    {
-                        [k_ModeProperty] = new SessionProperty(((int)mode).ToString(), VisibilityPropertyOptions.Member),
-                    },
                 }.WithRelayNetwork();
+                AddMemberProperty(options, k_ModeProperty, ((int)mode).ToString());
+                AddMemberProperty(options, k_DatasetProperty, datasetName);
+                AddMemberProperty(options, k_DatasetHashProperty, DatasetHash.Of(datasetName));
+                AddMemberProperty(options, k_HostNameProperty, PlayerProfile.Name);
 
                 IHostSession session = await MultiplayerService.Instance.CreateSessionAsync(options);
                 AttachSession(session, SessionState.Hosting, mode);
@@ -177,6 +192,9 @@ namespace DataViz.Networking
             m_Session.RemovedFromSession += OnSessionLost;
             m_Network = NetworkManager.Singleton;
             m_Network.OnClientStopped += OnNetworkStopped; // also raised on the host when it stops
+            SessionDatasetName = ReadProperty(session, k_DatasetProperty);
+            SessionDatasetHash = ReadProperty(session, k_DatasetHashProperty);
+            HostName = ReadProperty(session, k_HostNameProperty);
             SetState(state, mode, session.Code ?? "", session.Id ?? "");
         }
 
@@ -245,13 +263,23 @@ namespace DataViz.Networking
         }
 
         static SessionMode ReadMode(ISession session) =>
-            session.Properties.TryGetValue(k_ModeProperty, out SessionProperty property) &&
-            int.TryParse(property.Value, out int value) && Enum.IsDefined(typeof(SessionMode), value)
+            int.TryParse(ReadProperty(session, k_ModeProperty), out int value) && Enum.IsDefined(typeof(SessionMode), value)
                 ? (SessionMode)value
                 : SessionMode.Remote;
 
+        static string ReadProperty(ISession session, string key) =>
+            session.Properties.TryGetValue(key, out SessionProperty property) ? property.Value ?? "" : "";
+
+        // Session properties are visible to members only; empty values are left out.
+        static void AddMemberProperty(SessionOptions options, string key, string value)
+        {
+            if (!string.IsNullOrEmpty(value))
+                options.SessionProperties[key] = new SessionProperty(value, VisibilityPropertyOptions.Member);
+        }
+
         void SetOffline()
         {
+            SessionDatasetName = SessionDatasetHash = HostName = "";
             SetState(SessionState.Offline, Mode, "", "");
             if (m_Players.Count > 0 || LastChangedBy.Length > 0)
             {

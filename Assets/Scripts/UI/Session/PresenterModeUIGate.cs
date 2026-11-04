@@ -17,12 +17,16 @@ namespace DataViz.Networking
     /// under an island - and removes it again on unlock. MappingDropSlots (bookmark drops) in gated
     /// units are disabled while locked, so dropped blocks are refused.
     ///
-    /// Anything under m_Excluded stays usable: the Session island and local-only preferences
-    /// (bookmarks, blacklist, Shuffle locks, tooltips toggle). Offline nothing is ever changed.
+    /// Anything under m_Excluded or under a <see cref="PresenterModeExempt"/> stays usable: menu
+    /// navigation (tabs), the session strip and local-only preferences (bookmarks, blacklist,
+    /// Shuffle locks, tooltips, import wizard). Offline nothing is ever changed.
+    ///
+    /// Controls in inactive panels (other tabs) are locked too; while locked the gate rescans every
+    /// m_RescanInterval seconds, so controls created later (rows added at runtime) are locked as well.
     /// </summary>
     public class PresenterModeUIGate : MonoBehaviour
     {
-        [Tooltip("Subtrees that stay usable in presenter mode (Session island, local-only prefs).")]
+        [Tooltip("Subtrees that stay usable in presenter mode (local-only prefs), besides any PresenterModeExempt.")]
         public List<GameObject> m_Excluded = new();
 
         [Tooltip("Shown only while editing is locked, e.g. \"Presenter mode — view only\".")]
@@ -34,11 +38,15 @@ namespace DataViz.Networking
         [Range(0f, 1f)]
         public float m_LockedAlpha = 0.45f;
 
+        [Tooltip("While locked, seconds between scans for controls created since the lock.")]
+        public float m_RescanInterval = 0.5f;
+
         private readonly Dictionary<GameObject, CanvasGroup> m_Groups = new();
         private readonly List<Behaviour> m_DisabledBehaviours = new();
         private readonly HashSet<Transform> m_ExcludedSet = new();
         private bool m_Locked;
         private bool m_Applied;
+        private float m_NextRescan;
 
         /// <summary>True while this gate is currently locking its controls.</summary>
         public bool IsLocked => m_Locked;
@@ -66,6 +74,8 @@ namespace DataViz.Networking
         {
             if (SharedPlotAuthority.LocalPlayerCanEdit == m_Locked)
                 Refresh();
+            else if (m_Locked && Time.unscaledTime >= m_NextRescan)
+                Lock(); // idempotent for units already locked
         }
 
         public void Refresh()
@@ -86,6 +96,7 @@ namespace DataViz.Networking
 
         private void Lock()
         {
+            m_NextRescan = Time.unscaledTime + m_RescanInterval;
             BuildExcludedSet();
 
             foreach (Selectable selectable in GetComponentsInChildren<Selectable>(true))
@@ -162,6 +173,8 @@ namespace DataViz.Networking
             foreach (GameObject go in m_Excluded)
                 if (go != null)
                     m_ExcludedSet.Add(go.transform);
+            foreach (PresenterModeExempt exempt in GetComponentsInChildren<PresenterModeExempt>(true))
+                m_ExcludedSet.Add(exempt.transform);
             if (m_ViewOnlyNote != null)
                 m_ExcludedSet.Add(m_ViewOnlyNote.transform);
         }

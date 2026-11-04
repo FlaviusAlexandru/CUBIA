@@ -1,3 +1,5 @@
+#if UNITY_EDITOR
+// Editor-only setup tool (not in an Editor folder): compiled out of player builds.
 using DataViz;
 using TMPro;
 using UnityEditor;
@@ -95,3 +97,4 @@ public static class WristUIMirrorSetup
         Debug.Log($"[WristUIMirrorSetup] Wired {wired} of {kMirroredControls.Length} wrist control mirror(s).");
     }
 }
+#endif

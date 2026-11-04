@@ -78,3 +78,5 @@ crashlytics-build.properties
 __pycache__/
 __pycache__.meta
 *.pyc
+# Generated before each build by DatasetIndexBuilder
+/Assets/StreamingAssets/DataCSV/ProcessedData/cubia_dataset_index.json*

@@ -96,7 +96,7 @@ namespace DataViz.Networking
                 {
                     MaxPlayers = MaxPlayers,
                     IsPrivate = true, // joinable by code only, never listed
-                }.WithRelayNetwork();
+                }.WithRelayNetwork(new RelayNetworkOptions(RelayProtocol.WSS)); // WebSocket over 443: gets through eduroam/campus firewalls that block UDP
                 AddMemberProperty(options, k_ModeProperty, ((int)mode).ToString());
                 AddMemberProperty(options, k_DatasetProperty, datasetName);
                 AddMemberProperty(options, k_DatasetHashProperty, DatasetHash.Of(datasetName));

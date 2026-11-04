@@ -1,3 +1,5 @@
+#if UNITY_EDITOR
+// Editor-only setup tool (not in an Editor folder): compiled out of player builds.
 using System.Collections.Generic;
 using System.Reflection;
 using DataViz;
@@ -394,3 +396,4 @@ public static class NewUISetup
         serialized.ApplyModifiedProperties();
     }
 }
+#endif

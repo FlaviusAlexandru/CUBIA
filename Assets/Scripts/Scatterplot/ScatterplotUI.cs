@@ -201,15 +201,7 @@ namespace DataViz
             m_DatasetDropdown.ClearOptions();
 
             // Check for columnar datasets first
-            string processedDataPath = Path.Combine(Application.streamingAssetsPath, "DataCSV", "ProcessedData");
-            if (Directory.Exists(processedDataPath))
-            {
-                string[] columnarFiles = Directory.GetFiles(processedDataPath, "*.cdataset");
-                foreach (string file in columnarFiles)
-                {
-                    m_AvailableDatasets.Add(Path.GetFileName(file));
-                }
-            }
+            m_AvailableDatasets.AddRange(DatasetStore.Files());
 
             // Fallback to CSV files in DataCSV
             string csvDataPath = Path.Combine(Application.streamingAssetsPath, "DataCSV");

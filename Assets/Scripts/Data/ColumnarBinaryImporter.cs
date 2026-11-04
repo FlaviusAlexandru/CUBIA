@@ -52,10 +52,11 @@ public static class ColumnarBinaryImporter
     private const ushort LatestKnownVersion = 3;
 
     /// <summary>Folder the .cdataset files are loaded from.</summary>
-    public static string DataFolder => Path.Combine(Application.streamingAssetsPath, "DataCSV", "ProcessedData");
+    public static string DataFolder => DatasetStore.LocalFolder;
 
     public static DatasetColumnar Load(string fileName)
     {
+        DatasetStore.EnsureLocal(fileName); // Android: copy the chosen dataset out of the APK
         string path = Path.Combine(DataFolder, fileName);
 
         if (!File.Exists(path))
@@ -96,6 +97,11 @@ public static class ColumnarBinaryImporter
     /// </summary>
     public static DatasetSummary ReadSummary(string fileName, bool includeCellStats = true, int sampleCount = 3)
     {
+        // Android: header-only summaries come from the build index, so listing datasets extracts nothing.
+        if (!includeCellStats && DatasetStore.IsPacked && !DatasetStore.IsLocal(fileName))
+            return DatasetStore.IndexedSummary(fileName);
+        DatasetStore.EnsureLocal(fileName);
+
         string path = Path.Combine(DataFolder, fileName);
         if (!File.Exists(path))
             return null;

@@ -575,18 +575,12 @@ namespace DataViz
             }
 
             // Check for columnar processed datasets first
-            string processedDataPath = Path.Combine(Application.streamingAssetsPath, "DataCSV", "ProcessedData");
-
-            if (Directory.Exists(processedDataPath))
+            List<string> columnarFiles = DatasetStore.Files();
+            if (columnarFiles.Count > 0)
             {
-                string[] columnarFiles = Directory.GetFiles(processedDataPath, "*.cdataset");
-
-                if (columnarFiles.Length > 0)
-                {
-                    CurrentDatasetName = Path.GetFileName(columnarFiles[0]);
-                    LoadLocalDataset(CurrentDatasetName);
-                    return;
-                }
+                CurrentDatasetName = columnarFiles[0];
+                LoadLocalDataset(CurrentDatasetName);
+                return;
             }
 
             // Fallback to CSV files in DataCSV
@@ -606,7 +600,7 @@ namespace DataViz
             }
 
             // Final fallback to regular streaming assets
-            string[] streamingCsvFiles = Directory.GetFiles(Application.streamingAssetsPath, "*.csv");
+            string[] streamingCsvFiles = DatasetStore.IsPacked ? new string[0] : Directory.GetFiles(Application.streamingAssetsPath, "*.csv");
 
             if (streamingCsvFiles.Length > 0)
             {

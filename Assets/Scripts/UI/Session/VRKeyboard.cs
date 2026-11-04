@@ -297,7 +297,7 @@ namespace DataViz.Networking
                 else
                 {
                     m_EntryText.text = m_Text.Length < m_MaxLength
-                        ? m_Text + "<color=#FFFFFF80>_</color>"
+                        ? m_Text + "<color=#00000060>_</color>"
                         : m_Text.ToString();
                 }
             }

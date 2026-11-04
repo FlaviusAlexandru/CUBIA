@@ -21,6 +21,9 @@ namespace DataViz.Networking
         }
 
         public Transform Head { get; private set; }
+
+        /// <summary>False once the rig was destroyed (e.g. by a scene change); call Find again.</summary>
+        public bool IsValid => Head != null;
         readonly Side m_Left;
         readonly Side m_Right;
 

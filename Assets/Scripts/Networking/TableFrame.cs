@@ -139,6 +139,14 @@ namespace DataViz.Networking
             return true;
         }
 
+        /// <summary>Moves the table to a world pose (e.g. one aligned in the lobby, carried into the data scene).</summary>
+        public void SetPose(Pose worldPose)
+        {
+            ReleasePlaceGrab();
+            transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
+            OnTableMoved?.Invoke();
+        }
+
         /// <summary>Restore the table to its scene-authored pose.</summary>
         public void ResetTablePose()
         {

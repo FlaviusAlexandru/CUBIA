@@ -29,7 +29,11 @@ namespace DataViz.Networking
     /// The owner samples its XR rig, converts to the table frame and writes owner-authoritative
     /// NetworkVariables at ~20 Hz; remote copies smooth towards them and convert back through
     /// their own table, so each player's table placement decides where the others appear.
-    /// The owner's own copy is never shown.
+    /// The owner's own copy is never shown. Player objects survive NGO scene loads, so the owner
+    /// re-finds the rig whenever the scene (and its rig) changed.
+    ///
+    /// While no NetworkScatterplotState is spawned (the lobby), the avatars also feed
+    /// SessionService.Players: every connected player has one, carrying name and colour.
     /// </summary>
     public class NetworkPlayerAvatar : NetworkBehaviour
     {
@@ -91,6 +95,7 @@ namespace DataViz.Networking
 
             ApplyColour();
             OnProfileChanged?.Invoke(); // initial values don't raise OnValueChanged
+            PublishRoster();
         }
 
         public override void OnNetworkDespawn()
@@ -99,6 +104,7 @@ namespace DataViz.Networking
             m_Name.OnValueChanged -= OnNameChanged;
             m_Colour.OnValueChanged -= OnColourChanged;
             PlayerProfile.OnChanged -= PushProfile;
+            PublishRoster();
         }
 
         void LateUpdate()
@@ -116,7 +122,7 @@ namespace DataViz.Networking
             if (Time.unscaledTime < m_NextSendTime) return;
             m_NextSendTime = Time.unscaledTime + m_SendInterval;
 
-            m_Rig ??= XRRigPoseSource.Find();
+            if (m_Rig == null || !m_Rig.IsValid) m_Rig = XRRigPoseSource.Find();
             if (m_Rig == null) return;
 
             var pose = new AvatarPose
@@ -210,12 +216,40 @@ namespace DataViz.Networking
             m_Colour.Value = PlayerProfile.Colour;
         }
 
-        void OnNameChanged(FixedString64Bytes previous, FixedString64Bytes current) => OnProfileChanged?.Invoke();
+        void OnNameChanged(FixedString64Bytes previous, FixedString64Bytes current)
+        {
+            OnProfileChanged?.Invoke();
+            PublishRoster();
+        }
 
         void OnColourChanged(Color previous, Color current)
         {
             ApplyColour();
             OnProfileChanged?.Invoke();
+            PublishRoster();
+        }
+
+        /// <summary>Lobby player list: host first, then by client id. NetworkScatterplotState owns the list once spawned.</summary>
+        static void PublishRoster()
+        {
+            SessionService session = SessionService.Instance;
+            NetworkScatterplotState state = NetworkScatterplotState.Instance;
+            if (session == null || (state != null && state.IsSpawned)) return;
+
+            var players = new List<PlayerInfo>(s_Spawned.Count);
+            foreach (NetworkPlayerAvatar avatar in s_Spawned)
+            {
+                players.Add(new PlayerInfo
+                {
+                    ClientId = avatar.OwnerClientId,
+                    Name = avatar.PlayerName,
+                    Colour = avatar.PlayerColour,
+                    IsHost = avatar.OwnerClientId == NetworkManager.ServerClientId,
+                });
+            }
+            if (!session.IsInSession && players.Count > 0) return; // stale avatars while shutting down
+            players.Sort((a, b) => a.IsHost != b.IsHost ? (a.IsHost ? -1 : 1) : a.ClientId.CompareTo(b.ClientId));
+            session.SetPlayers(players);
         }
 
         void ApplyColour()

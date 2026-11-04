@@ -15,16 +15,7 @@ namespace DataViz.Wizard
         static readonly Dictionary<string, (DateTime written, DatasetSummary summary)> s_Headers = new();
 
         /// <summary>File names (e.g. "clusters.cdataset"), sorted by name.</summary>
-        public static List<string> Files()
-        {
-            var files = new List<string>();
-            string folder = ColumnarBinaryImporter.DataFolder;
-            if (Directory.Exists(folder))
-                foreach (string path in Directory.GetFiles(folder, "*" + Extension))
-                    files.Add(Path.GetFileName(path));
-            files.Sort(StringComparer.OrdinalIgnoreCase);
-            return files;
-        }
+        public static List<string> Files() => DatasetStore.Files();
 
         /// <summary>"name" or "name.cdataset" to the file name, or null when no such file exists.</summary>
         public static string Resolve(string datasetName)
@@ -34,7 +25,7 @@ namespace DataViz.Wizard
             string file = Path.GetFileName(datasetName.Trim());
             if (!file.EndsWith(Extension, StringComparison.OrdinalIgnoreCase))
                 file += Extension;
-            return File.Exists(Path.Combine(ColumnarBinaryImporter.DataFolder, file)) ? file : null;
+            return DatasetStore.Exists(file) ? file : null;
         }
 
         /// <summary>Names, types and row count only (fast for any file size). Null if unreadable.</summary>

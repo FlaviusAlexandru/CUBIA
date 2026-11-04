@@ -27,6 +27,10 @@ namespace DataViz.Networking
         /// <summary>Hex SHA-256 of the local file for datasetName, or "" if there is no such file.</summary>
         public static string Of(string datasetName)
         {
+            // Android: the files sit inside the APK; their hashes were taken at build time.
+            if (DatasetStore.IsPacked)
+                return string.IsNullOrEmpty(datasetName) ? "" : DatasetStore.IndexedHash(ToColumnar(datasetName)) ?? "";
+
             string path = ResolvePath(datasetName);
             if (path == null)
                 return "";
@@ -72,9 +76,7 @@ namespace DataViz.Networking
 
             string root = Path.Combine(Application.streamingAssetsPath, "DataCSV");
 
-            string columnar = datasetName.EndsWith(".cdataset")
-                ? datasetName
-                : datasetName.Replace(".csv", ".cdataset").Replace(".dataset", ".cdataset");
+            string columnar = ToColumnar(datasetName);
             string columnarPath = Path.Combine(root, "ProcessedData", columnar);
             if (File.Exists(columnarPath))
                 return columnarPath;
@@ -82,5 +84,9 @@ namespace DataViz.Networking
             string csvPath = Path.Combine(root, columnar.Replace(".cdataset", ".csv"));
             return File.Exists(csvPath) ? csvPath : null;
         }
+
+        static string ToColumnar(string datasetName) => datasetName.EndsWith(".cdataset")
+            ? datasetName
+            : datasetName.Replace(".csv", ".cdataset").Replace(".dataset", ".cdataset");
     }
 }

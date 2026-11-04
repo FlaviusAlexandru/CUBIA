@@ -78,6 +78,7 @@ namespace DataViz
                 m_BlockRoot = transform;
 
             NormalizeBlockRootScale();
+            CentreBlockRoot();
 
             List<string> bookmarks = (m_Manager != null) ? m_Manager.GetBookmarkedColumns() : new List<string>();
 
@@ -125,6 +126,19 @@ namespace DataViz
             int col = index % columns;
             int row = index / columns;
             return m_FirstCellOffset + new Vector3(col * m_CellSize.x, -row * m_CellSize.y, 0f);
+        }
+
+        /// <summary>
+        /// Puts the block grid's origin at the panel's centre, whatever the panel's pivot. The tab
+        /// menu gives the palette strip a top pivot, which used to push the first row above the strip.
+        /// </summary>
+        private void CentreBlockRoot()
+        {
+            if (m_BlockRoot == transform || !(transform is RectTransform rect))
+                return;
+
+            Vector2 centre = rect.rect.center;
+            m_BlockRoot.localPosition = new Vector3(centre.x, centre.y, m_BlockRoot.localPosition.z);
         }
 
         private void NormalizeBlockRootScale()

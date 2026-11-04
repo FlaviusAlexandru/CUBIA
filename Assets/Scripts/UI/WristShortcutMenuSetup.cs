@@ -1,3 +1,5 @@
+#if UNITY_EDITOR
+// Editor-only setup tool (not in an Editor folder): compiled out of player builds.
 using System.Collections.Generic;
 using DataViz;
 using UnityEditor;
@@ -103,3 +105,4 @@ public static class WristShortcutMenuSetup
         }
     }
 }
+#endif

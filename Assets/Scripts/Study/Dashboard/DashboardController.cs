@@ -1,0 +1,1221 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using DataViz.Networking;
+using DataViz.Wizard;
+using UnityEngine;
+using UnityEngine.UIElements;
+
+namespace DataViz.Study
+{
+    /// <summary>
+    /// Desktop-only facilitator dashboard (WP2): a second view on MultiplayerScatterplotManager next
+    /// to CUBIA's VR menu. It calls the same Request…Rpc methods as ScatterplotUI (same "None" = -1
+    /// offsets, same filter/glyph value lists) and refreshes from OnDatasetLoaded /
+    /// OnPlotSettingsChanged, so both views stay in sync. Every change goes through
+    /// IStudySessionLogger.RunAsFacilitator so the logger can tell it apart from participant changes.
+    /// Spawned by StudyDashboardBootstrap; never touches the VR menu or XR input.
+    /// </summary>
+    public sealed class DashboardController : MonoBehaviour
+    {
+        const string k_None = "None";
+        const string k_RequestHint = "req-hint"; // optional hint label (not part of DashboardIds)
+        const int k_MaxUndo = 50;
+        const int k_RecentRows = 10;
+        const float k_SliderCommitDelay = 0.4f;
+        const float k_FlashSeconds = 4f;
+        static readonly CultureInfo k_Inv = CultureInfo.InvariantCulture;
+
+        /// <summary>Set by StudyDashboardBootstrap: the runtime PanelSettings this dashboard owns.</summary>
+        internal PanelSettings OwnedPanelSettings;
+
+        UIDocument m_Document;
+        IStudySessionLogger m_Logger;
+        MultiplayerScatterplotManager m_Manager;
+        bool m_Initialised;
+        bool m_IsUpdatingUI;
+        int m_FacilitatorDepth; // > 0 while one of our own manager calls runs
+
+        // Frame
+        VisualElement m_Root;
+        Button m_MinimiseButton;
+        // Session
+        TextField m_ParticipantField, m_LogFolderField;
+        DropdownField m_PartField;
+        Button m_SessionButton, m_LogFolderApply;
+        Label m_SessionTime, m_SessionStatus;
+        // Dataset
+        DropdownField m_DatasetDropdown;
+        Button m_DatasetRescan, m_DatasetLoad;
+        // Mappings
+        DropdownField m_X, m_Y, m_Z, m_Color, m_Size, m_Time, m_GlyphColumn;
+        Slider m_PointSize;
+        // Glyphs
+        DropdownField m_GlyphLabel, m_GlyphShape;
+        // Filters
+        DropdownField m_FilterColumn, m_FilterValue;
+        Button m_FilterClear;
+        // Time
+        Slider m_TimeScrub;
+        Button m_PlayPause;
+        // View
+        Toggle m_Tooltips;
+        Button m_ResetPosition, m_Undo;
+        // Request log
+        TextField m_RequestText;
+        RadioButtonGroup m_TagGroup;
+        RadioButton m_TagPossible, m_TagImpossible, m_TagPartly;
+        Button m_LogButton, m_MarkerButton;
+        VisualElement m_RecentList;
+        Label m_RequestHint;
+        // Status
+        Label m_StatusLine;
+
+        readonly List<string> m_MissingElements = new();
+        readonly List<string> m_Columns = new();
+        List<string> m_Datasets = new();
+        readonly List<PlotSnapshot> m_UndoStack = new();
+        readonly List<(string text, string cssClass)> m_Recent = new(); // newest first
+
+        // Value lists per column index (filter values / glyph labels), cleared on dataset load:
+        // building them scans every row, and OnPlotSettingsChanged fires every frame during playback.
+        readonly Dictionary<int, List<string>> m_ValueCache = new();
+        int m_FilterValuesColumn = int.MinValue;
+        int m_GlyphLabelsColumn = int.MinValue;
+
+        sealed class SliderDrag
+        {
+            public bool Active;
+            public bool CommitRequested;
+            public float StartValue;
+            public float LastChangeTime;
+        }
+
+        readonly SliderDrag m_PointDrag = new();
+        readonly SliderDrag m_ScrubDrag = new();
+
+        string m_SessionMessage;      // last session error / note (null = show file name)
+        string m_LastChange;          // "participant SetColor"
+        PlotSnapshot m_LastSnapshot;  // baseline for naming participant changes while not logging
+        string m_Flash;
+        float m_FlashUntil;
+        float m_NextTick;
+
+        bool IsLogging => m_Logger != null && m_Logger.IsLogging;
+
+        // ================================================================== setup
+
+        /// <summary>Wires the dashboard to its UI, logger and the plot. Called once by the bootstrap.</summary>
+        public void Initialise(UIDocument document, IStudySessionLogger logger, MultiplayerScatterplotManager manager)
+        {
+            if (m_Initialised) return;
+            m_Document = document;
+            m_Logger = logger;
+            m_Manager = manager;
+
+            VisualElement rootVe = document != null ? document.rootVisualElement : null;
+            if (rootVe == null)
+            {
+                Debug.LogError("[DashboardController] UIDocument has no root visual element; dashboard disabled.");
+                return;
+            }
+            // The document's root covers the whole screen; only the panel itself may catch the mouse.
+            rootVe.pickingMode = PickingMode.Ignore;
+
+            QueryElements(rootVe);
+            ConfigureStaticControls();
+            RegisterCallbacks();
+
+            if (m_Manager != null)
+            {
+                m_Manager.OnDatasetLoaded += OnDatasetLoaded;
+                m_Manager.OnPlotSettingsChanged += OnPlotSettingsChanged;
+            }
+            if (m_Logger != null)
+            {
+                m_Logger.RowWritten += OnRowWritten;
+                m_Logger.SessionStateChanged += RefreshSession;
+                if (m_LogFolderField != null) m_LogFolderField.SetValueWithoutNotify(m_Logger.LogFolder ?? "");
+                if (m_ParticipantField != null && !string.IsNullOrEmpty(m_Logger.ParticipantId))
+                    m_ParticipantField.SetValueWithoutNotify(m_Logger.ParticipantId);
+                if (m_PartField != null && m_Logger.Part >= 1 && m_Logger.Part <= 2)
+                    m_PartField.SetValueWithoutNotify(m_Logger.Part.ToString(k_Inv));
+            }
+
+            m_Initialised = true;
+            RescanDatasets();
+            OnDatasetLoaded();
+            RefreshSession();
+            RebuildRecentList();
+            UpdateUndoButton();
+        }
+
+        void QueryElements(VisualElement r)
+        {
+            m_Root = Find<VisualElement>(r, DashboardIds.Root);
+            Find<ScrollView>(r, DashboardIds.Body);
+            m_MinimiseButton = Find<Button>(r, DashboardIds.MinimiseButton);
+
+            m_ParticipantField = Find<TextField>(r, DashboardIds.ParticipantField);
+            m_PartField = Find<DropdownField>(r, DashboardIds.PartField);
+            m_SessionButton = Find<Button>(r, DashboardIds.SessionButton);
+            m_SessionTime = Find<Label>(r, DashboardIds.SessionTime);
+            m_LogFolderField = Find<TextField>(r, DashboardIds.LogFolderField);
+            m_LogFolderApply = Find<Button>(r, DashboardIds.LogFolderApply);
+            m_SessionStatus = Find<Label>(r, DashboardIds.SessionStatus);
+
+            m_DatasetDropdown = Find<DropdownField>(r, DashboardIds.DatasetDropdown);
+            m_DatasetRescan = Find<Button>(r, DashboardIds.DatasetRescan);
+            m_DatasetLoad = Find<Button>(r, DashboardIds.DatasetLoad);
+
+            m_X = Find<DropdownField>(r, DashboardIds.XDropdown);
+            m_Y = Find<DropdownField>(r, DashboardIds.YDropdown);
+            m_Z = Find<DropdownField>(r, DashboardIds.ZDropdown);
+            m_Color = Find<DropdownField>(r, DashboardIds.ColorDropdown);
+            m_Size = Find<DropdownField>(r, DashboardIds.SizeDropdown);
+            m_Time = Find<DropdownField>(r, DashboardIds.TimeDropdown);
+            m_GlyphColumn = Find<DropdownField>(r, DashboardIds.GlyphColumnDropdown);
+            m_PointSize = Find<Slider>(r, DashboardIds.PointSizeSlider);
+
+            m_GlyphLabel = Find<DropdownField>(r, DashboardIds.GlyphLabelDropdown);
+            m_GlyphShape = Find<DropdownField>(r, DashboardIds.GlyphShapeDropdown);
+
+            m_FilterColumn = Find<DropdownField>(r, DashboardIds.FilterColumnDropdown);
+            m_FilterValue = Find<DropdownField>(r, DashboardIds.FilterValueDropdown);
+            m_FilterClear = Find<Button>(r, DashboardIds.FilterClear);
+
+            m_TimeScrub = Find<Slider>(r, DashboardIds.TimeScrubSlider);
+            m_PlayPause = Find<Button>(r, DashboardIds.PlayPauseButton);
+
+            m_Tooltips = Find<Toggle>(r, DashboardIds.TooltipsToggle);
+            m_ResetPosition = Find<Button>(r, DashboardIds.ResetPositionButton);
+            m_Undo = Find<Button>(r, DashboardIds.UndoButton);
+
+            m_RequestText = Find<TextField>(r, DashboardIds.RequestText);
+            m_TagGroup = Find<RadioButtonGroup>(r, DashboardIds.TagGroup);
+            m_TagPossible = Find<RadioButton>(r, DashboardIds.TagPossible);
+            m_TagImpossible = Find<RadioButton>(r, DashboardIds.TagImpossible);
+            m_TagPartly = Find<RadioButton>(r, DashboardIds.TagPartly);
+            m_LogButton = Find<Button>(r, DashboardIds.LogButton);
+            m_MarkerButton = Find<Button>(r, DashboardIds.MarkerButton);
+            m_RecentList = Find<VisualElement>(r, DashboardIds.RecentList);
+            m_RequestHint = r.Q<Label>(k_RequestHint); // optional
+
+            m_StatusLine = Find<Label>(r, DashboardIds.StatusLine);
+
+            if (m_MissingElements.Count > 0)
+                Debug.LogWarning("[DashboardController] Missing UI elements (those controls are skipped): " +
+                                 string.Join(", ", m_MissingElements));
+        }
+
+        T Find<T>(VisualElement root, string name) where T : VisualElement
+        {
+            T element = root.Q<T>(name);
+            if (element == null) m_MissingElements.Add($"{name} ({typeof(T).Name})");
+            return element;
+        }
+
+        void ConfigureStaticControls()
+        {
+            if (m_PartField != null)
+            {
+                m_PartField.choices = new List<string> { "1", "2" };
+                if (m_PartField.index < 0) m_PartField.SetValueWithoutNotify("1");
+            }
+            if (m_GlyphShape != null)
+                m_GlyphShape.choices = new List<string>(ScatterplotUI.k_GlyphShapeNames);
+            if (m_PointSize != null)
+            {
+                m_PointSize.lowValue = 0f;
+                m_PointSize.highValue = MultiplayerScatterplotManager.MaxPointSize;
+            }
+            if (m_TimeScrub != null)
+            {
+                m_TimeScrub.lowValue = 0f;
+                m_TimeScrub.highValue = 1f;
+            }
+            if (m_RequestText != null)
+            {
+                m_RequestText.multiline = false;
+                m_RequestText.isDelayed = false;
+            }
+        }
+
+        void RegisterCallbacks()
+        {
+            OnClick(m_MinimiseButton, ToggleMinimised);
+
+            OnClick(m_SessionButton, ToggleSession);
+            OnClick(m_LogFolderApply, ApplyLogFolder);
+
+            OnClick(m_DatasetRescan, RescanDatasets);
+            OnClick(m_DatasetLoad, LoadSelectedDataset);
+
+            OnChoice(m_X, OnXChanged);
+            OnChoice(m_Y, OnYChanged);
+            OnChoice(m_Z, OnZChanged);
+            OnChoice(m_Color, OnColorChanged);
+            OnChoice(m_Size, OnSizeChanged);
+            OnChoice(m_Time, OnTimeChanged);
+            OnChoice(m_GlyphColumn, OnGlyphColumnChanged);
+            RegisterSlider(m_PointSize, m_PointDrag, OnPointSizeDragged);
+
+            // Picking a label only changes which label the shape dropdown edits (like ScatterplotUI).
+            OnChoice(m_GlyphLabel, _ => RefreshGlyphShape());
+            OnChoice(m_GlyphShape, OnGlyphShapeChanged);
+
+            OnChoice(m_FilterColumn, OnFilterColumnChanged);
+            OnChoice(m_FilterValue, OnFilterValueChanged);
+            OnClick(m_FilterClear, ClearFilters);
+
+            RegisterSlider(m_TimeScrub, m_ScrubDrag, OnScrubDragged);
+            OnClick(m_PlayPause, TogglePlayback);
+
+            m_Tooltips?.RegisterValueChangedCallback(evt =>
+            {
+                if (!m_IsUpdatingUI) SetTooltips(evt.newValue);
+            });
+            OnClick(m_ResetPosition, ResetPlotPosition);
+            OnClick(m_Undo, Undo);
+
+            OnClick(m_LogButton, LogRequest);
+            OnClick(m_MarkerButton, LogMarker);
+        }
+
+        static void OnClick(Button button, Action action)
+        {
+            if (button != null) button.clicked += action;
+        }
+
+        void OnChoice(DropdownField field, Action<int> handler)
+        {
+            if (field == null) return;
+            field.RegisterValueChangedCallback(_ =>
+            {
+                if (m_IsUpdatingUI || m_Manager == null) return;
+                handler(field.index);
+            });
+        }
+
+        // Sliders apply every step without a row; one row is written when the drag ends
+        // (pointer up / capture lost, or k_SliderCommitDelay without changes for keyboard steps).
+        void RegisterSlider(Slider slider, SliderDrag drag, Action<float> onStep)
+        {
+            if (slider == null) return;
+            slider.RegisterValueChangedCallback(evt =>
+            {
+                if (m_IsUpdatingUI || m_Manager == null) return;
+                onStep(evt.newValue);
+            });
+            slider.RegisterCallback<PointerUpEvent>(_ => drag.CommitRequested = true, TrickleDown.TrickleDown);
+            slider.RegisterCallback<PointerCaptureOutEvent>(_ => drag.CommitRequested = true, TrickleDown.TrickleDown);
+        }
+
+        void OnDestroy()
+        {
+            if (!ReferenceEquals(m_Manager, null))
+            {
+                m_Manager.OnDatasetLoaded -= OnDatasetLoaded;
+                m_Manager.OnPlotSettingsChanged -= OnPlotSettingsChanged;
+            }
+            if (m_Logger != null)
+            {
+                m_Logger.RowWritten -= OnRowWritten;
+                m_Logger.SessionStateChanged -= RefreshSession;
+            }
+            if (OwnedPanelSettings != null)
+                Destroy(OwnedPanelSettings);
+        }
+
+        // ================================================================== per frame
+
+        void Update()
+        {
+            if (!m_Initialised) return;
+
+            HandleHotkeys();
+            CheckSliderCommit(m_PointDrag, CommitPointSize);
+            CheckSliderCommit(m_ScrubDrag, CommitScrub);
+
+            if (Time.unscaledTime >= m_NextTick)
+            {
+                m_NextTick = Time.unscaledTime + 1f;
+                UpdateSessionTime();
+                UpdateStatusLine();
+            }
+        }
+
+        void HandleHotkeys()
+        {
+            var keyboard = UnityEngine.InputSystem.Keyboard.current;
+            if (keyboard == null) return;
+
+            if (keyboard.f1Key.wasPressedThisFrame)
+                ToggleMinimised();
+
+            GetFocus(out bool anyFocused, out bool requestFocused, out bool otherTextFocused);
+            if (otherTextFocused) return; // typing in participant / folder field: keys belong to it
+
+            if (keyboard.f9Key.wasPressedThisFrame)
+                LogMarker();
+
+            bool ctrl = keyboard.leftCtrlKey.isPressed || keyboard.rightCtrlKey.isPressed;
+            if (ctrl && keyboard.zKey.wasPressedThisFrame)
+                Undo();
+
+            bool enter = keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame;
+            if (enter && (requestFocused || !anyFocused))
+                LogRequest();
+        }
+
+        void GetFocus(out bool anyFocused, out bool requestFocused, out bool otherTextFocused)
+        {
+            Focusable focused = m_Document != null ? m_Document.rootVisualElement?.panel?.focusController?.focusedElement : null;
+            anyFocused = focused != null;
+            requestFocused = false;
+            otherTextFocused = false;
+            if (!(focused is VisualElement element)) return;
+
+            // The focused element can be the field's inner text input, so walk up to the TextField.
+            for (VisualElement e = element; e != null; e = e.parent)
+            {
+                if (m_RequestText != null && e == m_RequestText)
+                {
+                    requestFocused = true;
+                    return;
+                }
+                if (e is TextField)
+                {
+                    otherTextFocused = true;
+                    return;
+                }
+            }
+        }
+
+        void CheckSliderCommit(SliderDrag drag, Action commit)
+        {
+            if (!drag.Active)
+            {
+                drag.CommitRequested = false;
+                return;
+            }
+            var mouse = UnityEngine.InputSystem.Mouse.current;
+            bool held = mouse != null && mouse.leftButton.isPressed;
+            bool idle = !held && Time.unscaledTime - drag.LastChangeTime >= k_SliderCommitDelay;
+            if (drag.CommitRequested || idle)
+            {
+                drag.CommitRequested = false;
+                commit();
+            }
+        }
+
+        // ================================================================== manager → UI
+
+        void OnDatasetLoaded()
+        {
+            if (!m_Initialised || m_Manager == null) return;
+
+            m_Columns.Clear();
+            DatasetColumnar dataset = m_Manager.LoadedDataset;
+            if (dataset != null)
+                foreach (DatasetColumn column in dataset.Columns)
+                    m_Columns.Add(column != null ? column.Name : "");
+
+            m_ValueCache.Clear();
+            m_FilterValuesColumn = int.MinValue;
+            m_GlyphLabelsColumn = int.MinValue;
+
+            m_IsUpdatingUI = true;
+            try
+            {
+                SetChoices(m_X, new List<string>(m_Columns));
+                SetChoices(m_Y, new List<string>(m_Columns));
+                SetChoices(m_Z, new List<string>(m_Columns));
+                SetChoices(m_Color, WithNone());
+                SetChoices(m_Size, WithNone());
+                SetChoices(m_Time, WithNone());
+                SetChoices(m_GlyphColumn, WithNone());
+                SetChoices(m_FilterColumn, WithNone());
+
+                // Only here, not on every settings change, so a file picked but not yet loaded stays picked.
+                int datasetIndex = m_Datasets.IndexOf(m_Manager.CurrentDatasetName ?? "");
+                if (datasetIndex >= 0) SetIndex(m_DatasetDropdown, datasetIndex);
+            }
+            finally
+            {
+                m_IsUpdatingUI = false;
+            }
+
+            RefreshFromManager();
+        }
+
+        void OnPlotSettingsChanged()
+        {
+            if (!m_Initialised || m_Manager == null) return;
+            TrackParticipantChange();
+            RefreshFromManager();
+        }
+
+        void RefreshFromManager()
+        {
+            if (!m_Initialised || m_Manager == null || m_IsUpdatingUI) return;
+            MultiplayerScatterplotManager m = m_Manager;
+
+            m_IsUpdatingUI = true;
+            try
+            {
+                SetIndex(m_X, m.XColumnIndex);
+                SetIndex(m_Y, m.YColumnIndex);
+                SetIndex(m_Z, m.ZColumnIndex);
+                SetIndex(m_Color, m.ColorColumnIndex + 1); // +1 for "None"
+                SetIndex(m_Size, CurrentSizeColumn() + 1);
+                SetIndex(m_Time, m.TimeColumnIndex + 1);
+                SetIndex(m_GlyphColumn, m.GlyphColumnIndex + 1);
+
+                if (m_PointSize != null && !m_PointDrag.Active)
+                    m_PointSize.SetValueWithoutNotify(m.PointSize);
+                if (m_PointSize != null)
+                    SetLabel(m_PointSize, $"Point size {PointSizePercent(m_PointSize.value):F0}%");
+
+                bool hasTime = m.TimeColumnIndex >= 0;
+                if (m_TimeScrub != null)
+                {
+                    if (!m_ScrubDrag.Active) m_TimeScrub.SetValueWithoutNotify(m.TimeScrub);
+                    SetLabel(m_TimeScrub, $"Scrub {m_TimeScrub.value * 100f:F0}%");
+                    m_TimeScrub.SetEnabled(hasTime);
+                }
+                if (m_PlayPause != null)
+                {
+                    m_PlayPause.text = m.IsPlaying ? "Pause" : "Play";
+                    m_PlayPause.SetEnabled(hasTime);
+                }
+
+                m_Tooltips?.SetValueWithoutNotify(m.ShowTooltips);
+
+                // Filters (first entry, like the VR menu's single filter row)
+                SetIndex(m_FilterColumn, m.FilterColumnIndex + 1);
+                PopulateFilterValues(m.FilterColumnIndex);
+                if (m_FilterValue != null && m_FilterValue.choices != null)
+                {
+                    // Option 0 is "Any value" (empty label); search from 1 so a real value with that text still resolves.
+                    int valueIndex = string.IsNullOrEmpty(m.FilterLabel) ? 0 : m_FilterValue.choices.IndexOf(m.FilterLabel, 1);
+                    SetIndex(m_FilterValue, Mathf.Max(0, valueIndex));
+                }
+                m_FilterClear?.SetEnabled(m.Filters.Count > 0);
+
+                // Glyphs
+                PopulateGlyphLabels(m.GlyphColumnIndex);
+                RefreshGlyphShape();
+            }
+            finally
+            {
+                m_IsUpdatingUI = false;
+            }
+
+            UpdateStatusLine();
+        }
+
+        int CurrentSizeColumn() =>
+            m_Manager.SizeMapped && m_Manager.SizeColumnIndex >= 0 ? m_Manager.SizeColumnIndex : -1;
+
+        void PopulateFilterValues(int columnIndex)
+        {
+            if (m_FilterValue == null || columnIndex == m_FilterValuesColumn) return;
+            m_FilterValuesColumn = columnIndex;
+
+            var options = new List<string> { ScatterplotUI.k_AnyFilterValueOption };
+            options.AddRange(ColumnValues(columnIndex));
+            m_FilterValue.choices = options;
+            m_FilterValue.SetValueWithoutNotify(options[0]);
+            m_FilterValue.SetEnabled(columnIndex >= 0);
+        }
+
+        void PopulateGlyphLabels(int columnIndex)
+        {
+            if (m_GlyphLabel == null || columnIndex == m_GlyphLabelsColumn) return;
+            m_GlyphLabelsColumn = columnIndex;
+
+            var options = new List<string>(ColumnValues(columnIndex));
+            m_GlyphLabel.choices = options;
+            m_GlyphLabel.SetValueWithoutNotify(options.Count > 0 ? options[0] : "");
+            m_GlyphLabel.SetEnabled(options.Count > 0);
+            m_GlyphShape?.SetEnabled(options.Count > 0);
+        }
+
+        /// <summary>
+        /// Values of a column as ScatterplotUI lists them: numeric columns without UniqueValues are
+        /// read from the rows (empty cells skipped), categorical ones use UniqueValues; both sorted
+        /// numerically where possible. Same formatting so labels match what the manager compares.
+        /// </summary>
+        List<string> ColumnValues(int columnIndex)
+        {
+            DatasetColumnar dataset = m_Manager != null ? m_Manager.LoadedDataset : null;
+            if (columnIndex < 0 || dataset == null) return new List<string>();
+            if (m_ValueCache.TryGetValue(columnIndex, out List<string> cached)) return cached;
+
+            var values = new List<string>();
+            DatasetColumn column = dataset.GetColumn(columnIndex);
+            if (column != null)
+            {
+                if (column.IsNumeric && column.UniqueValues.Count == 0)
+                {
+                    var unique = new HashSet<string>();
+                    for (int row = 0; row < dataset.RowCount; row++)
+                    {
+                        if (!dataset.HasValue(row, columnIndex)) continue; // an empty cell's stored 0 is not a value
+                        unique.Add(dataset.GetNumericValue(row, columnIndex).ToString());
+                    }
+                    values.AddRange(unique);
+                }
+                else if (column.UniqueValues != null && column.UniqueValues.Count > 0)
+                {
+                    values.AddRange(column.UniqueValues);
+                }
+                values.Sort(CompareValues);
+            }
+
+            m_ValueCache[columnIndex] = values;
+            return values;
+        }
+
+        static int CompareValues(string a, string b)
+        {
+            if (float.TryParse(a, out float numA) && float.TryParse(b, out float numB))
+                return numA.CompareTo(numB);
+            return string.Compare(a, b, StringComparison.Ordinal);
+        }
+
+        string SelectedGlyphLabel()
+        {
+            if (m_GlyphLabel == null || m_GlyphLabel.choices == null || m_GlyphLabel.index < 0) return null;
+            return m_GlyphLabel.value;
+        }
+
+        void RefreshGlyphShape()
+        {
+            if (m_GlyphShape == null || m_Manager == null) return;
+            string label = SelectedGlyphLabel();
+            if (string.IsNullOrEmpty(label)) return;
+
+            int glyph = Mathf.Clamp(m_Manager.GetGlyphForLabel(label, 0), 0, ScatterplotUI.k_GlyphShapeNames.Length - 1);
+            bool wasUpdating = m_IsUpdatingUI;
+            m_IsUpdatingUI = true;
+            SetIndex(m_GlyphShape, glyph);
+            m_IsUpdatingUI = wasUpdating;
+        }
+
+        List<string> WithNone()
+        {
+            var list = new List<string>(m_Columns.Count + 1) { k_None };
+            list.AddRange(m_Columns);
+            return list;
+        }
+
+        // Only when the text changed: refreshes run every frame during playback.
+        static void SetLabel(Slider slider, string text)
+        {
+            if (slider.label != text) slider.label = text;
+        }
+
+        static void SetChoices(DropdownField field, List<string> choices)
+        {
+            if (field == null) return;
+            field.choices = choices;
+            if (!choices.Contains(field.value))
+                field.SetValueWithoutNotify(choices.Count > 0 ? choices[0] : "");
+        }
+
+        static void SetIndex(DropdownField field, int index)
+        {
+            if (field == null || field.choices == null) return;
+            List<string> choices = field.choices;
+            string value = index >= 0 && index < choices.Count ? choices[index] : "";
+            if (field.value != value) field.SetValueWithoutNotify(value);
+        }
+
+        string ColumnName(int index) => index >= 0 && index < m_Columns.Count ? m_Columns[index] : k_None;
+
+        // ================================================================== facilitator changes
+
+        /// <summary>Pushes an undo snapshot (optional) and runs a manager call attributed to the facilitator.</summary>
+        void Facilitate(string action, string oldValue, string newValue, Action apply, bool pushUndo = true)
+        {
+            if (m_Manager == null) return;
+            if (pushUndo) PushUndo();
+            RunAsFacilitator(action, oldValue, newValue, apply, true);
+        }
+
+        void RunAsFacilitator(string action, string oldValue, string newValue, Action apply, bool writeRow)
+        {
+            m_FacilitatorDepth++;
+            try
+            {
+                if (m_Logger != null) m_Logger.RunAsFacilitator(action, oldValue ?? "", newValue ?? "", apply, writeRow);
+                else apply();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                Flash($"{action} failed: {e.Message}");
+            }
+            finally
+            {
+                m_FacilitatorDepth--;
+            }
+
+            // Without a session there are no logger rows, so remember the change ourselves.
+            if (writeRow && !IsLogging) m_LastChange = $"facilitator {action}";
+            if (m_Manager != null) m_LastSnapshot = PlotSnapshot.Capture(m_Manager);
+            UpdateStatusLine();
+        }
+
+        void OnXChanged(int index)
+        {
+            if (index < 0) return;
+            Facilitate(StudyActions.SetX, ColumnName(m_Manager.XColumnIndex), ColumnName(index),
+                () => m_Manager.RequestXColumnRpc(index));
+        }
+
+        void OnYChanged(int index)
+        {
+            if (index < 0) return;
+            Facilitate(StudyActions.SetY, ColumnName(m_Manager.YColumnIndex), ColumnName(index),
+                () => m_Manager.RequestYColumnRpc(index));
+        }
+
+        void OnZChanged(int index)
+        {
+            if (index < 0) return;
+            Facilitate(StudyActions.SetZ, ColumnName(m_Manager.ZColumnIndex), ColumnName(index),
+                () => m_Manager.RequestZColumnRpc(index));
+        }
+
+        void OnColorChanged(int index)
+        {
+            if (index < 0) return;
+            int column = index - 1; // 0 ("None") → -1
+            Facilitate(StudyActions.SetColor, ColumnName(m_Manager.ColorColumnIndex), ColumnName(column),
+                () => m_Manager.RequestColorColumnRpc(column));
+        }
+
+        void OnSizeChanged(int index)
+        {
+            if (index < 0) return;
+            int column = index - 1; // "None" = fixed size (SizeMapped off)
+            Facilitate(StudyActions.SetSize, ColumnName(CurrentSizeColumn()), ColumnName(column), () =>
+            {
+                if (column < 0)
+                {
+                    m_Manager.RequestSizeMappedRpc(false);
+                }
+                else
+                {
+                    m_Manager.RequestSizeColumnRpc(column);
+                    m_Manager.RequestSizeMappedRpc(true);
+                }
+            });
+        }
+
+        void OnTimeChanged(int index)
+        {
+            if (index < 0) return;
+            int column = index - 1;
+            Facilitate(StudyActions.SetTime, ColumnName(m_Manager.TimeColumnIndex), ColumnName(column),
+                () => m_Manager.RequestTimeColumnRpc(column));
+        }
+
+        void OnGlyphColumnChanged(int index)
+        {
+            if (index < 0) return;
+            int column = index - 1;
+            Facilitate(StudyActions.SetGlyphColumn, ColumnName(m_Manager.GlyphColumnIndex), ColumnName(column),
+                () => m_Manager.RequestGlyphColumnRpc(column));
+        }
+
+        void OnGlyphShapeChanged(int index)
+        {
+            string label = SelectedGlyphLabel();
+            if (index < 0 || string.IsNullOrEmpty(label)) return;
+            string[] shapes = ScatterplotUI.k_GlyphShapeNames;
+            int oldGlyph = m_Manager.GetGlyphForLabel(label, 0);
+            string oldShape = oldGlyph >= 0 && oldGlyph < shapes.Length ? shapes[oldGlyph] : oldGlyph.ToString(k_Inv);
+            string newShape = index < shapes.Length ? shapes[index] : index.ToString(k_Inv);
+            Facilitate(StudyActions.AssignGlyph, $"{label}={oldShape}", $"{label}={newShape}",
+                () => m_Manager.RequestGlyphAssignmentRpc(label, index));
+        }
+
+        void OnFilterColumnChanged(int index)
+        {
+            if (index < 0) return;
+            int column = index - 1; // "None" removes the first filter entry
+            Facilitate(StudyActions.SetFilterColumn, ColumnName(m_Manager.FilterColumnIndex), ColumnName(column),
+                () => m_Manager.RequestFilterIndexRpc(column));
+        }
+
+        void OnFilterValueChanged(int index)
+        {
+            if (index < 0 || m_Manager.Filters.Count == 0 || m_FilterValue?.choices == null) return;
+            string label = index == 0 ? "" : m_FilterValue.choices[index]; // "Any value" = empty label
+            Facilitate(StudyActions.SetFilterValue, FilterValueName(m_Manager.FilterLabel), FilterValueName(label),
+                () => m_Manager.RequestFilterLabelRpc(label));
+        }
+
+        static string FilterValueName(string label) =>
+            string.IsNullOrEmpty(label) ? ScatterplotUI.k_AnyFilterValueOption : label;
+
+        void ClearFilters()
+        {
+            if (m_Manager == null || m_Manager.Filters.Count == 0) return;
+            string old = string.Join("; ", m_Manager.Filters.Select(f =>
+                $"{ColumnName(f.ColumnIndex)}={FilterValueName(f.Label)}"));
+            Facilitate(StudyActions.ClearFilters, old, "", () => m_Manager.RequestClearFiltersRpc());
+        }
+
+        void TogglePlayback()
+        {
+            if (m_Manager == null) return;
+            bool play = !m_Manager.IsPlaying;
+            Facilitate(play ? StudyActions.Play : StudyActions.Pause, play ? "Paused" : "Playing", play ? "Playing" : "Paused",
+                () => m_Manager.RequestPlaybackToggleRpc(play));
+        }
+
+        void SetTooltips(bool show)
+        {
+            if (m_Manager == null) return;
+            // Tooltips are local and not in PlotSnapshot, so there is nothing to undo.
+            Facilitate(StudyActions.Tooltips, OnOff(m_Manager.ShowTooltips), OnOff(show),
+                () => m_Manager.RequestTooltipsToggleRpc(show), pushUndo: false);
+            // The manager does not raise OnPlotSettingsChanged for tooltips.
+            RefreshFromManager();
+        }
+
+        static string OnOff(bool value) => value ? "On" : "Off";
+
+        void ResetPlotPosition()
+        {
+            var plot = FindAnyObjectByType<CoordinateSystemInteractable>();
+            if (plot == null)
+            {
+                Flash("No plot found to reset");
+                return;
+            }
+            // The plot transform is not in PlotSnapshot, so there is nothing to undo.
+            Facilitate(StudyActions.ResetPosition, "", "", plot.ResetPosition, pushUndo: false);
+        }
+
+        // ---------------------------------------------------------------- sliders
+
+        void OnPointSizeDragged(float value)
+        {
+            BeginDrag(m_PointDrag, m_Manager.PointSize);
+            RunAsFacilitator(StudyActions.SetPointSize, FormatSize(m_PointDrag.StartValue), FormatSize(value),
+                () => m_Manager.RequestPointSizeRpc(value), writeRow: false);
+        }
+
+        void CommitPointSize()
+        {
+            if (!EndDrag(m_PointDrag, m_PointSize, out float start, out float end)) return;
+            RunAsFacilitator(StudyActions.SetPointSize, FormatSize(start), FormatSize(end),
+                () => m_Manager.RequestPointSizeRpc(end), writeRow: true);
+        }
+
+        void OnScrubDragged(float value)
+        {
+            BeginDrag(m_ScrubDrag, m_Manager.TimeScrub);
+            RunAsFacilitator(StudyActions.Scrub, FormatScrub(m_ScrubDrag.StartValue), FormatScrub(value),
+                () => m_Manager.RequestTimeScrubRpc(value), writeRow: false);
+        }
+
+        void CommitScrub()
+        {
+            if (!EndDrag(m_ScrubDrag, m_TimeScrub, out float start, out float end)) return;
+            RunAsFacilitator(StudyActions.Scrub, FormatScrub(start), FormatScrub(end),
+                () => m_Manager.RequestTimeScrubRpc(end), writeRow: true);
+        }
+
+        void BeginDrag(SliderDrag drag, float currentValue)
+        {
+            if (!drag.Active)
+            {
+                drag.Active = true;
+                drag.StartValue = currentValue;
+                PushUndo(); // one snapshot per drag, taken before the first step
+            }
+            drag.LastChangeTime = Time.unscaledTime;
+        }
+
+        /// <summary>Ends a drag. False (and the drag's undo snapshot dropped) when the value ended where it started.</summary>
+        bool EndDrag(SliderDrag drag, Slider slider, out float start, out float end)
+        {
+            start = drag.StartValue;
+            end = slider != null ? slider.value : start;
+            drag.Active = false;
+            if (m_Manager == null) return false;
+            if (Mathf.Approximately(start, end))
+            {
+                if (m_UndoStack.Count > 0) m_UndoStack.RemoveAt(m_UndoStack.Count - 1);
+                UpdateUndoButton();
+                RefreshFromManager();
+                return false;
+            }
+            return true;
+        }
+
+        static float PointSizePercent(float size) => size / MultiplayerScatterplotManager.MaxPointSize * 100f;
+        static string FormatSize(float size) => size.ToString("0.####", k_Inv);
+        static string FormatScrub(float scrub) => scrub.ToString("0.###", k_Inv);
+
+        // ---------------------------------------------------------------- dataset
+
+        void RescanDatasets()
+        {
+            try
+            {
+                m_Datasets = DatasetCatalog.Files() ?? new List<string>();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                m_Datasets = new List<string>();
+                Flash("Could not read the dataset folder");
+            }
+
+            if (m_DatasetDropdown == null) return;
+            string selected = m_DatasetDropdown.value;
+            m_DatasetDropdown.choices = new List<string>(m_Datasets);
+            int index = m_Datasets.IndexOf(selected ?? "");
+            if (index < 0 && m_Manager != null) index = m_Datasets.IndexOf(m_Manager.CurrentDatasetName ?? "");
+            if (index < 0 && m_Datasets.Count > 0) index = 0;
+            m_DatasetDropdown.SetValueWithoutNotify(index >= 0 ? m_Datasets[index] : "");
+            m_DatasetLoad?.SetEnabled(m_Datasets.Count > 0);
+        }
+
+        void LoadSelectedDataset()
+        {
+            if (m_Manager == null || m_DatasetDropdown == null) return;
+            string file = m_DatasetDropdown.value;
+            if (string.IsNullOrEmpty(file)) return;
+            Facilitate(StudyActions.LoadDataset, m_Manager.CurrentDatasetName ?? "", file,
+                () => m_Manager.RequestLoadDatasetRpc(file));
+        }
+
+        // ---------------------------------------------------------------- undo
+
+        void PushUndo()
+        {
+            if (m_Manager == null) return;
+            m_UndoStack.Add(PlotSnapshot.Capture(m_Manager));
+            if (m_UndoStack.Count > k_MaxUndo) m_UndoStack.RemoveAt(0);
+            UpdateUndoButton();
+        }
+
+        void Undo()
+        {
+            if (m_Manager == null) return;
+            if (m_UndoStack.Count == 0)
+            {
+                Flash("Nothing to undo");
+                return;
+            }
+
+            PlotSnapshot snapshot = m_UndoStack[m_UndoStack.Count - 1];
+            m_UndoStack.RemoveAt(m_UndoStack.Count - 1);
+            UpdateUndoButton();
+
+            if (snapshot.DatasetName != (m_Manager.CurrentDatasetName ?? ""))
+            {
+                Flash("Undo not possible after a dataset change");
+                return;
+            }
+            RunAsFacilitator(StudyActions.Undo, "", "",
+                () => m_Manager.ApplyNetworkSnapshot(snapshot, snapshot.TimeScrub), writeRow: true);
+        }
+
+        void UpdateUndoButton() => m_Undo?.SetEnabled(m_UndoStack.Count > 0);
+
+        // ================================================================== session
+
+        void ToggleSession()
+        {
+            if (m_Logger == null)
+            {
+                m_SessionMessage = "No logger available";
+                RefreshSession();
+                return;
+            }
+
+            if (m_Logger.IsLogging)
+            {
+                m_Logger.StopSession();
+                m_SessionMessage = null;
+            }
+            else
+            {
+                string participant = m_ParticipantField != null ? (m_ParticipantField.value ?? "").Trim() : "";
+                int part = 1;
+                if (m_PartField != null && !int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out part))
+                    part = 1;
+                m_SessionMessage = m_Logger.StartSession(participant, part, out string error) ? null : error;
+            }
+            RefreshSession();
+        }
+
+        void ApplyLogFolder()
+        {
+            if (m_Logger == null || m_LogFolderField == null) return;
+            if (m_Logger.SetLogFolder((m_LogFolderField.value ?? "").Trim(), out string error))
+            {
+                m_LogFolderField.SetValueWithoutNotify(m_Logger.LogFolder ?? "");
+                m_SessionMessage = "Log folder set";
+            }
+            else
+            {
+                m_SessionMessage = string.IsNullOrEmpty(error) ? "Log folder not usable" : error;
+            }
+            RefreshSession();
+        }
+
+        void RefreshSession()
+        {
+            if (!m_Initialised) return;
+            bool logging = IsLogging;
+
+            if (m_SessionButton != null)
+            {
+                m_SessionButton.text = logging ? "Stop logging" : "Start logging";
+                m_SessionButton.SetEnabled(m_Logger != null);
+            }
+            m_ParticipantField?.SetEnabled(!logging);
+            m_PartField?.SetEnabled(!logging);
+            m_LogFolderField?.SetEnabled(!logging);
+            m_LogFolderApply?.SetEnabled(!logging && m_Logger != null);
+
+            if (m_SessionStatus != null)
+            {
+                string file = logging && !string.IsNullOrEmpty(m_Logger.CurrentFilePath)
+                    ? Path.GetFileName(m_Logger.CurrentFilePath) : null;
+                if (!string.IsNullOrEmpty(m_SessionMessage))
+                    m_SessionStatus.text = file != null ? $"{m_SessionMessage} · {file}" : m_SessionMessage;
+                else
+                    m_SessionStatus.text = file != null ? $"Logging to {file}" : "Not logging";
+            }
+
+            m_LogButton?.SetEnabled(logging);
+            m_MarkerButton?.SetEnabled(logging);
+            if (m_RequestHint != null)
+                m_RequestHint.style.display = logging ? DisplayStyle.None : DisplayStyle.Flex;
+
+            // A fresh session starts with a fresh baseline for naming participant changes.
+            if (m_Manager != null) m_LastSnapshot = PlotSnapshot.Capture(m_Manager);
+            UpdateSessionTime();
+        }
+
+        void UpdateSessionTime()
+        {
+            if (m_SessionTime == null) return;
+            double seconds = IsLogging ? Math.Max(0d, m_Logger.SessionTime) : 0d;
+            int total = (int)seconds;
+            m_SessionTime.text = $"{total / 60:00}:{total % 60:00}";
+        }
+
+        // ================================================================== request log
+
+        void LogRequest()
+        {
+            if (m_Logger == null || m_RequestText == null) return;
+            string text = (m_RequestText.value ?? "").Trim();
+            if (text.Length == 0) return;
+            if (!m_Logger.IsLogging)
+            {
+                Flash("Start logging to record requests");
+                return;
+            }
+            m_Logger.LogRequest(text, SelectedTag());
+            m_RequestText.SetValueWithoutNotify("");
+            ClearTag();
+        }
+
+        void LogMarker()
+        {
+            if (m_Logger == null) return;
+            if (!m_Logger.IsLogging)
+            {
+                Flash("Start logging to record markers");
+                return;
+            }
+            m_Logger.LogMarker();
+        }
+
+        RequestTag SelectedTag()
+        {
+            if (m_TagPossible != null || m_TagImpossible != null || m_TagPartly != null)
+            {
+                if (m_TagPossible != null && m_TagPossible.value) return RequestTag.Possible;
+                if (m_TagImpossible != null && m_TagImpossible.value) return RequestTag.Impossible;
+                if (m_TagPartly != null && m_TagPartly.value) return RequestTag.Partly;
+                return RequestTag.None;
+            }
+            // No individual radios found: fall back to the group's index (child order Possible, Impossible, Partly).
+            if (m_TagGroup == null) return RequestTag.None;
+            switch (m_TagGroup.value)
+            {
+                case 0: return RequestTag.Possible;
+                case 1: return RequestTag.Impossible;
+                case 2: return RequestTag.Partly;
+                default: return RequestTag.None;
+            }
+        }
+
+        void ClearTag()
+        {
+            if (m_TagPossible != null) m_TagPossible.value = false;
+            if (m_TagImpossible != null) m_TagImpossible.value = false;
+            if (m_TagPartly != null) m_TagPartly.value = false;
+            if (m_TagPossible == null && m_TagImpossible == null && m_TagPartly == null && m_TagGroup != null)
+                m_TagGroup.value = -1;
+        }
+
+        void OnRowWritten(StudyLogRow row)
+        {
+            if (row == null) return;
+
+            m_Recent.Insert(0, FormatRow(row));
+            if (m_Recent.Count > k_RecentRows) m_Recent.RemoveRange(k_RecentRows, m_Recent.Count - k_RecentRows);
+            RebuildRecentList();
+
+            if ((row.Source == ChangeSource.Facilitator || row.Source == ChangeSource.Participant) &&
+                row.Action != StudyActions.SessionStart && row.Action != StudyActions.SessionStop)
+                m_LastChange = $"{SourceName(row.Source)} {row.Action}";
+            UpdateStatusLine();
+        }
+
+        static (string text, string cssClass) FormatRow(StudyLogRow row)
+        {
+            string time = row.Timestamp.ToString("HH:mm", k_Inv);
+            switch (row.Source)
+            {
+                case ChangeSource.Request:
+                    string tag = row.Tag != RequestTag.None ? $" [{row.Tag}]" : "";
+                    return ($"{time} request \"{row.RequestText}\"{tag}", "dash-recent-row--request");
+                case ChangeSource.Marker:
+                    string note = string.IsNullOrEmpty(row.RequestText) ? "" : $" {row.RequestText}";
+                    return ($"{time} marker{note}", "dash-recent-row--marker");
+                default:
+                    string value = string.IsNullOrEmpty(row.NewValue) ? "" : $" → {row.NewValue}";
+                    return ($"{time} {SourceName(row.Source)} {row.Action}{value}", null);
+            }
+        }
+
+        static string SourceName(ChangeSource source) => source.ToString().ToLowerInvariant();
+
+        void RebuildRecentList()
+        {
+            if (m_RecentList == null) return;
+            m_RecentList.Clear();
+            if (m_Recent.Count == 0)
+            {
+                var empty = new Label("No rows yet");
+                empty.AddToClassList("dash-recent-row");
+                empty.AddToClassList("dash-note");
+                m_RecentList.Add(empty);
+                return;
+            }
+            foreach ((string text, string cssClass) in m_Recent)
+            {
+                var label = new Label(text);
+                label.AddToClassList("dash-recent-row");
+                if (cssClass != null) label.AddToClassList(cssClass);
+                m_RecentList.Add(label);
+            }
+        }
+
+        // ================================================================== status line
+
+        /// <summary>
+        /// Names participant changes while no session runs (the logger does this while logging).
+        /// Changes made inside our own RunAsFacilitator are skipped; playback ticks are ignored.
+        /// </summary>
+        void TrackParticipantChange()
+        {
+            if (m_FacilitatorDepth > 0 || IsLogging) return;
+            PlotSnapshot now = PlotSnapshot.Capture(m_Manager);
+            string action = NameChange(m_LastSnapshot, now);
+            m_LastSnapshot = now;
+            if (action != null) m_LastChange = $"participant {action}";
+        }
+
+        static string NameChange(PlotSnapshot a, PlotSnapshot b)
+        {
+            if (a == null || b == null) return null;
+            if (a.DatasetName != b.DatasetName) return StudyActions.LoadDataset;
+            if (a.XColumn != b.XColumn) return StudyActions.SetX;
+            if (a.YColumn != b.YColumn) return StudyActions.SetY;
+            if (a.ZColumn != b.ZColumn) return StudyActions.SetZ;
+            if (a.ColourColumn != b.ColourColumn) return StudyActions.SetColor;
+            if (a.SizeColumn != b.SizeColumn) return StudyActions.SetSize;
+            if (a.SizeMapped != b.SizeMapped) return StudyActions.SetSizeMapped;
+            if (a.TimeColumn != b.TimeColumn) return StudyActions.SetTime;
+            if (a.GlyphColumn != b.GlyphColumn) return StudyActions.SetGlyphColumn;
+            if (!a.GlyphLabels.SequenceEqual(b.GlyphLabels) || !a.GlyphIndices.SequenceEqual(b.GlyphIndices))
+                return StudyActions.AssignGlyph;
+            if (!a.RangeGlyphs.SequenceEqual(b.RangeGlyphs) || !a.RangeMins.SequenceEqual(b.RangeMins) ||
+                !a.RangeMaxs.SequenceEqual(b.RangeMaxs))
+                return StudyActions.SetGlyphRanges;
+            if (a.PointSize != b.PointSize) return StudyActions.SetPointSize;
+            if (a.FilterColumns.Length < b.FilterColumns.Length) return StudyActions.AddFilter;
+            if (a.FilterColumns.Length > b.FilterColumns.Length)
+                return b.FilterColumns.Length == 0 ? StudyActions.ClearFilters : StudyActions.RemoveFilter;
+            if (!a.FilterColumns.SequenceEqual(b.FilterColumns)) return StudyActions.SetFilterColumn;
+            if (!a.FilterLabels.SequenceEqual(b.FilterLabels)) return StudyActions.SetFilterValue;
+            if (!a.FilterRangeCounts.SequenceEqual(b.FilterRangeCounts) || !a.FilterRangeMins.SequenceEqual(b.FilterRangeMins) ||
+                !a.FilterRangeMaxs.SequenceEqual(b.FilterRangeMaxs))
+                return StudyActions.SetFilterRanges;
+            if (a.IsPlaying != b.IsPlaying)
+                return !b.IsPlaying && b.TimeScrub >= 1f ? null : (b.IsPlaying ? StudyActions.Play : StudyActions.Pause); // playback reaching the end is not a change
+            if (a.TimeScrub != b.TimeScrub && !b.IsPlaying) return StudyActions.Scrub;
+            return a.SamePlotAs(b) ? null : StudyActions.Unknown;
+        }
+
+        void Flash(string message)
+        {
+            m_Flash = message;
+            m_FlashUntil = Time.unscaledTime + k_FlashSeconds;
+            UpdateStatusLine();
+        }
+
+        void UpdateStatusLine()
+        {
+            if (m_StatusLine == null || m_Manager == null) return;
+
+            DatasetColumnar dataset = m_Manager.LoadedDataset;
+            string rows;
+            if (dataset == null) rows = "No dataset loaded";
+            else if (m_Manager.Filters.Count == 0) rows = $"{dataset.RowCount.ToString("N0", k_Inv)} rows shown";
+            else rows = $"{dataset.RowCount.ToString("N0", k_Inv)} rows (filtered)"; // filtering itself stays in the renderer
+
+            string text = m_LastChange != null ? $"{rows} · last change: {m_LastChange}" : rows;
+            if (m_Flash != null)
+            {
+                if (Time.unscaledTime < m_FlashUntil) text = $"{text} · {m_Flash}";
+                else m_Flash = null;
+            }
+            if (m_StatusLine.text != text) m_StatusLine.text = text;
+        }
+
+        // ================================================================== frame
+
+        void ToggleMinimised()
+        {
+            if (m_Root == null) return;
+            m_Root.ToggleInClassList(DashboardIds.MinimisedClass);
+            bool minimised = m_Root.ClassListContains(DashboardIds.MinimisedClass);
+            if (m_MinimiseButton != null)
+            {
+                m_MinimiseButton.text = minimised ? "Dashboard" : "–";
+                m_MinimiseButton.tooltip = minimised ? "Show dashboard (F1)" : "Minimise (F1)";
+            }
+        }
+    }
+}

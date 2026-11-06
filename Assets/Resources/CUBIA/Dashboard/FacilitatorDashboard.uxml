@@ -1,0 +1,109 @@
+<UXML xmlns="UnityEngine.UIElements" editor-extension-mode="False">
+    <!-- Facilitator dashboard (WP1). Element names = DataViz.Study.DashboardIds; do not rename. -->
+    <Style src="FacilitatorDashboard.uss" />
+
+    <!-- Only this panel catches the mouse: the UIDocument's full-screen root is set to
+         picking-mode Ignore by DashboardController, so the left of the screen stays click-through. -->
+    <VisualElement name="dash-root" class="dash-root" picking-mode="Position">
+        <VisualElement class="dash-titlebar">
+            <Label text="Facilitator dashboard" class="dash-title" />
+            <Button name="dash-minimise" text="–" tooltip="Minimise (F1)" class="dash-button dash-minimise" />
+        </VisualElement>
+
+        <ScrollView name="dash-body" class="dash-body" mode="Vertical" horizontal-scroller-visibility="Hidden">
+            <!-- Session -->
+            <VisualElement class="dash-section">
+                <Label text="Session" class="dash-section__header" />
+                <TextField name="session-participant" label="Participant" />
+                <DropdownField name="session-part" label="Part" choices="1,2" index="0" />
+                <VisualElement class="dash-row">
+                    <Button name="session-toggle" text="Start logging" class="dash-button dash-button--primary" />
+                    <Label name="session-time" text="00:00" class="dash-session-time" />
+                </VisualElement>
+                <VisualElement class="dash-row">
+                    <TextField name="session-folder" label="Log folder" class="dash-grow" />
+                    <Button name="session-folder-apply" text="Set" class="dash-button" />
+                </VisualElement>
+                <Label name="session-status" text="Not logging" class="dash-note" />
+            </VisualElement>
+
+            <!-- Dataset -->
+            <VisualElement class="dash-section">
+                <Label text="Dataset" class="dash-section__header" />
+                <DropdownField name="dataset-list" label="File" />
+                <VisualElement class="dash-row dash-row--end">
+                    <Button name="dataset-rescan" text="Rescan" class="dash-button" />
+                    <Button name="dataset-load" text="Load" class="dash-button dash-button--primary" />
+                </VisualElement>
+            </VisualElement>
+
+            <!-- Mappings -->
+            <VisualElement class="dash-section">
+                <Label text="Mappings" class="dash-section__header" />
+                <DropdownField name="map-x" label="X" />
+                <DropdownField name="map-y" label="Y" />
+                <DropdownField name="map-z" label="Z" />
+                <DropdownField name="map-color" label="Colour" />
+                <DropdownField name="map-size" label="Size" />
+                <DropdownField name="map-time" label="Time" />
+                <DropdownField name="map-glyph" label="Glyph column" />
+                <Slider name="map-pointsize" label="Point size" low-value="0" high-value="0.1" />
+            </VisualElement>
+
+            <!-- Glyphs -->
+            <VisualElement class="dash-section">
+                <Label text="Glyphs" class="dash-section__header" />
+                <DropdownField name="glyph-label" label="Label" />
+                <DropdownField name="glyph-shape" label="Shape" />
+            </VisualElement>
+
+            <!-- Filters -->
+            <VisualElement class="dash-section">
+                <Label text="Filters" class="dash-section__header" />
+                <DropdownField name="filter-column" label="Column" />
+                <DropdownField name="filter-value" label="Value" />
+                <VisualElement class="dash-row dash-row--end">
+                    <Button name="filter-clear" text="Clear filters" class="dash-button" />
+                </VisualElement>
+            </VisualElement>
+
+            <!-- Time -->
+            <VisualElement class="dash-section">
+                <Label text="Time" class="dash-section__header" />
+                <Slider name="time-scrub" label="Scrub" low-value="0" high-value="1" />
+                <VisualElement class="dash-row dash-row--end">
+                    <Button name="time-play" text="Play" class="dash-button" />
+                </VisualElement>
+            </VisualElement>
+
+            <!-- View -->
+            <VisualElement class="dash-section">
+                <Label text="View" class="dash-section__header" />
+                <Toggle name="view-tooltips" label="Tooltips" />
+                <VisualElement class="dash-row dash-row--end">
+                    <Button name="view-reset" text="Reset position" class="dash-button" />
+                    <Button name="view-undo" text="Undo (Ctrl+Z)" class="dash-button" />
+                </VisualElement>
+            </VisualElement>
+
+            <!-- Request log -->
+            <VisualElement class="dash-section">
+                <Label text="Request log" class="dash-section__header" />
+                <TextField name="req-text" label="Request" multiline="false" placeholder-text="What did the participant ask for?" />
+                <RadioButtonGroup name="req-tags" label="Tag" value="-1" class="dash-tags">
+                    <RadioButton name="req-tag-possible" label="Possible" />
+                    <RadioButton name="req-tag-impossible" label="Impossible" />
+                    <RadioButton name="req-tag-partly" label="Partly" />
+                </RadioButtonGroup>
+                <VisualElement class="dash-row dash-row--end">
+                    <Button name="req-log" text="Log (Enter)" class="dash-button dash-button--primary" />
+                    <Button name="req-marker" text="Mark moment (F9)" class="dash-button" />
+                </VisualElement>
+                <Label name="req-hint" text="Start logging to record requests and markers." class="dash-note" />
+                <VisualElement name="req-recent" class="dash-recent" />
+            </VisualElement>
+        </ScrollView>
+
+        <Label name="status-line" text="" class="dash-status" />
+    </VisualElement>
+</UXML>

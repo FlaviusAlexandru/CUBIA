@@ -1,0 +1,249 @@
+/* Facilitator dashboard (WP1). Docked right, dark, compact; the rest of the screen stays clear. */
+
+.dash-root {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 34%;
+    min-width: 360px;
+    max-width: 100%;
+    flex-direction: column;
+    background-color: rgba(16, 18, 22, 0.9);
+    border-left-width: 1px;
+    border-left-color: rgb(58, 64, 76);
+    color: rgb(226, 229, 234);
+    font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- title bar */
+
+.dash-titlebar {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 4px 6px 4px 10px;
+    background-color: rgba(32, 36, 44, 0.95);
+    border-bottom-width: 1px;
+    border-bottom-color: rgb(58, 64, 76);
+}
+
+.dash-title {
+    flex-grow: 1;
+    font-size: 14px;
+    -unity-font-style: bold;
+    color: rgb(236, 238, 242);
+}
+
+.dash-root .dash-minimise {
+    min-width: 28px;
+}
+
+/* ---------------------------------------------------------------- body + sections */
+
+.dash-body {
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+.dash-body .unity-scroll-view__content-container {
+    padding: 4px 8px 8px 8px;
+}
+
+.dash-section {
+    margin-top: 6px;
+    padding-bottom: 6px;
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(58, 64, 76, 0.6);
+}
+
+.dash-section__header {
+    margin: 2px 0 2px 2px;
+    font-size: 13px;
+    -unity-font-style: bold;
+    color: rgb(130, 180, 240);
+}
+
+.dash-row {
+    flex-direction: row;
+    align-items: center;
+}
+
+.dash-row--end {
+    justify-content: flex-end;
+}
+
+.dash-grow {
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+.dash-note {
+    margin: 2px 3px;
+    font-size: 13px;
+    white-space: normal;
+    color: rgb(170, 176, 188);
+}
+
+.dash-session-time {
+    flex-grow: 1;
+    margin-left: 8px;
+    font-size: 14px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-right;
+}
+
+/* ---------------------------------------------------------------- fields (override the default theme) */
+
+.dash-root .unity-base-field {
+    margin: 1px 2px;
+    min-height: 22px;
+}
+
+.dash-root .unity-base-field__label {
+    min-width: 96px;
+    width: 96px;
+    font-size: 13px;
+    color: rgb(196, 201, 210);
+}
+
+.dash-root .unity-base-field__input {
+    background-color: rgb(38, 42, 50);
+    border-color: rgb(70, 77, 90);
+    color: rgb(230, 232, 236);
+}
+
+.dash-root .unity-text-element {
+    font-size: 13px;
+}
+
+.dash-root .unity-base-field__input .unity-text-element {
+    color: rgb(230, 232, 236);
+}
+
+.dash-root .unity-base-popup-field__arrow {
+    -unity-background-image-tint-color: rgb(200, 204, 212);
+}
+
+.dash-root .unity-base-slider__input {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.dash-root .unity-toggle__input,
+.dash-root .unity-radio-button__input {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+/* Tag radio buttons side by side (both container class names, for older/newer themes). */
+.dash-tags .unity-radio-button-group__container,
+.dash-tags > .unity-base-field__input {
+    flex-direction: row;
+    flex-wrap: wrap;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+}
+
+.dash-tags .unity-radio-button {
+    margin-right: 10px;
+}
+
+.dash-tags .unity-radio-button .unity-base-field__label {
+    min-width: 0;
+    width: auto;
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+.dash-root .unity-button {
+    margin: 2px;
+    padding: 2px 10px;
+    min-height: 22px;
+    font-size: 13px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: rgb(74, 82, 96);
+    background-color: rgb(50, 56, 68);
+    color: rgb(230, 232, 236);
+}
+
+.dash-root .unity-button:hover {
+    background-color: rgb(64, 72, 86);
+}
+
+.dash-root .unity-button:active {
+    background-color: rgb(40, 46, 56);
+}
+
+.dash-root .dash-button--primary {
+    background-color: rgb(40, 92, 160);
+    border-color: rgb(62, 118, 190);
+}
+
+.dash-root .dash-button--primary:hover {
+    background-color: rgb(50, 108, 184);
+}
+
+.dash-root .unity-button:disabled {
+    opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------- request log */
+
+.dash-recent {
+    margin: 4px 2px 0 2px;
+    padding: 3px 4px;
+    background-color: rgba(0, 0, 0, 0.25);
+    border-radius: 3px;
+}
+
+.dash-recent-row {
+    font-size: 13px;
+    white-space: normal;
+    color: rgb(204, 208, 216);
+}
+
+.dash-recent-row--request {
+    color: rgb(240, 210, 130);
+}
+
+.dash-recent-row--marker {
+    color: rgb(240, 150, 150);
+}
+
+/* ---------------------------------------------------------------- status line */
+
+.dash-status {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    font-size: 13px;
+    white-space: normal;
+    color: rgb(200, 205, 214);
+    background-color: rgba(32, 36, 44, 0.95);
+    border-top-width: 1px;
+    border-top-color: rgb(58, 64, 76);
+}
+
+/* ---------------------------------------------------------------- minimised: small tab, top right */
+
+.dash-root.dash--minimised {
+    top: 8px;
+    right: 8px;
+    bottom: auto;
+    width: auto;
+    min-width: 0;
+    border-width: 1px;
+    border-color: rgb(58, 64, 76);
+    border-radius: 4px;
+}
+
+.dash--minimised > .dash-titlebar {
+    padding: 2px;
+    border-bottom-width: 0;
+    border-radius: 4px;
+}
+
+.dash--minimised > .dash-titlebar > .dash-title,
+.dash--minimised > .dash-body,
+.dash--minimised > .dash-status {
+    display: none;
+}

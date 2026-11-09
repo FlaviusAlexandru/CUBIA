@@ -10,7 +10,8 @@ namespace DataViz.Study
     /// Spawns the facilitator dashboard (UIDocument + StudySessionLogger + DashboardController) on
     /// the PC monitor whenever a scene with a MultiplayerScatterplotManager loads. Desktop only:
     /// never on Android (Quest) builds, and skipped with the -nodashboard command-line argument.
-    /// The dashboard lives in the manager's scene, so it goes away with it.
+    /// The dashboard lives in the manager's scene, so it goes away with it. Each spawn also starts
+    /// a background WAM log import (WamIaAutoImporter).
     /// </summary>
     public static class StudyDashboardBootstrap
     {
@@ -134,6 +135,10 @@ namespace DataViz.Study
             }
 
             Current = controller;
+
+            // Convert new WAM logs on every Play press / launch. Never blocks: the dashboard is already
+            // subscribed to WamIaAutoImporter.Completed and toasts and refreshes when the run ends.
+            WamIaAutoImporter.Run(null);
         }
 
         static void PlaceInScene(GameObject go, Scene scene)

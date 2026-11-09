@@ -11,9 +11,11 @@ namespace DataViz.Study
         public const string Body = "dash-body";                     // ScrollView (everything below the title bar)
         public const string MinimiseButton = "dash-minimise";       // Button ("–" / "Dashboard" when minimised)
         public const string MinimisedClass = "dash--minimised";     // USS class toggled on Root
+        public const string ToastArea = "dash-toasts";              // VisualElement (picking-mode Ignore; toasts added by DashboardController.ShowToast)
 
         // Session
-        public const string ParticipantField = "session-participant"; // TextField
+        public const string ParticipantField = "session-participant"; // DropdownField (labels from the WAM Meta logs, "P07")
+        public const string ImportButton = "session-import";          // Button ("Import new logs" / "Importing…")
         public const string PartField = "session-part";               // DropdownField ("1", "2")
         public const string SessionButton = "session-toggle";         // Button ("Start logging" / "Stop logging")
         public const string SessionTime = "session-time";             // Label ("00:00")

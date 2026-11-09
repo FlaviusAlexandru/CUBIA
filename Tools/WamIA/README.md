@@ -28,7 +28,31 @@ because the Sample file's name stamp is a few ms off. Explicit files:
 
 Options: `--out <folder>` (default `Assets/StreamingAssets/DataCSV`), `--no-preprocess`,
 `--preprocessor <path>`, `--downsample N` (keep every Nth sample), `--hand right|left` (override
-main-hand detection), `--verbose`. Tests: `python Tools/WamIA/test_wam_to_cubia.py`.
+main-hand detection), `--verbose`. Tests: `python Tools/WamIA/test_wam_to_cubia.py` (set `WAMIA_REF_ROOT` if the pilot logs live in another checkout).
+
+## Automatic import (`--auto`)
+
+CUBIA runs this itself (see `AUTO_IMPORT_CONTRACT.md`, which both sides follow):
+
+    python Tools/WamIA/wam_to_cubia.py --auto --logs <WAM log folder> --out Assets/StreamingAssets/DataCSV --json
+
+It reads every `*_Meta.csv` in `--logs`, pairs Event/Sample by SessionID, works out part 1/part 2 per
+participant (`ParticipantID` 7 -> `P07`) by Meta Timestamp, and converts only sessions not yet in
+`<out>/WamIA~/state.json`. A restarted round (`SessionState` Interrupted followed by another session) and
+any third session replace the earlier outputs; those are moved to `<out>/WamIA~/Archive/` with
+` R dd-MM-yyyy HH.mm` before the extension, never deleted. Undo the last replacement of a part with
+
+    python Tools/WamIA/wam_to_cubia.py --restore P07 2 --out Assets/StreamingAssets/DataCSV
+
+(the files it displaces are archived the same way, so running it again undoes the restore).
+The last stdout line with `--json` is `WAMIA_RESULT {...}`. Extra options: `--state <folder>`,
+`--program <SessionProgram>`, `--settle-seconds N` (default 5: sessions whose log files changed less than
+N s ago are skipped as "in progress" and picked up next run). Skip reasons beyond the contract's:
+`unreadable Meta` (half-written Meta; `session` is then the file name), `in progress`, `no participant`,
+`out of order` (older than a session already imported for that participant; import it by hand),
+`error` (also listed in `errors`). A skip is reported once, when it first happens or its reason changes;
+`state.json` always holds the current status. A run with nothing new reads only the Meta files and the
+state and takes about 0.04 s.
 
 **Privacy:** only whitelisted log columns are read. Email, age, gender, injury date, profile and device
 ids are never read or written. Do not leave raw WAM logs in `DataCSV`: running the preprocessor on its

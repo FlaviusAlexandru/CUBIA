@@ -14,7 +14,11 @@
             <!-- Session -->
             <VisualElement class="dash-section">
                 <Label text="Session" class="dash-section__header" />
-                <TextField name="session-participant" label="Participant" />
+                <!-- Participants come from the WAM Meta logs (WamIaAutoImporter); filled by DashboardController. -->
+                <VisualElement class="dash-row">
+                    <DropdownField name="session-participant" label="Participant" class="dash-grow" />
+                    <Button name="session-import" text="Import new logs" class="dash-button" />
+                </VisualElement>
                 <DropdownField name="session-part" label="Part" choices="1,2" index="0" />
                 <VisualElement class="dash-row">
                     <Button name="session-toggle" text="Start logging" class="dash-button dash-button--primary" />
@@ -117,5 +121,9 @@
         </ScrollView>
 
         <Label name="status-line" text="" class="dash-status" />
+
+        <!-- Toasts: shown at the top of the panel (absolute, see .dash-toasts) but declared last so they
+             draw and pick above the body. Only the toasts themselves catch the mouse. -->
+        <VisualElement name="dash-toasts" class="dash-toasts" picking-mode="Ignore" />
     </VisualElement>
 </UXML>

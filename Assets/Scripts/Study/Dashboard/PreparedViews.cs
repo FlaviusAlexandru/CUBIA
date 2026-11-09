@@ -91,6 +91,23 @@ namespace DataViz.Study
                    "_" + (kind ?? "") + Extension;
         }
 
+        /// <summary>
+        /// The files of <see cref="All"/> for this participant and part that are not in
+        /// <paramref name="available"/> (compared ignoring case, like ApplyPreparedView), in view order
+        /// and without duplicates.
+        /// </summary>
+        public static List<string> MissingFiles(string participantId, int part, IEnumerable<string> available)
+        {
+            var have = new HashSet<string>(available ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var missing = new List<string>();
+            foreach (PreparedView v in All)
+            {
+                string file = FileFor(participantId, part, v.Kind);
+                if (!have.Contains(file) && !missing.Contains(file)) missing.Add(file);
+            }
+            return missing;
+        }
+
         /// <summary>The view with this id, or null.</summary>
         public static PreparedView Find(string id)
         {

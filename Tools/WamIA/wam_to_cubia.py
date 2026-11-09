@@ -5,6 +5,9 @@ WAM+IA log converter: Whack-A-Mole VR logs from ONE play-through -> three CUBIA 
     python wam_to_cubia.py --event <..._Event.csv> --sample <..._Sample.csv> [--meta <..._Meta.csv>]
                            --participant P07 --part 1 [--out <folder>] [--no-preprocess]
     python wam_to_cubia.py --logs <folder with WAM logs> --participant P07 --part 1
+    python wam_to_cubia.py --auto --logs <WAM log folder> --out <DataCSV> --json     (batch, see
+                           AUTO_IMPORT_CONTRACT.md)
+    python wam_to_cubia.py --restore P07 2 --out <DataCSV>                         (undo a replacement)
 
 Writes {participant}_part{part}_movement.csv / _moles.csv / _combined.csv into --out
 (default: <repo>/Assets/StreamingAssets/DataCSV) and, unless --no-preprocess, converts just
@@ -21,18 +24,30 @@ See README.md for the column glossary.
 import argparse
 import contextlib
 import csv
+import datetime as dt_
 import importlib.util
 import io
+import json
 import math
 import os
 import re
+import shutil
 import sys
 import time
 import warnings
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+# numpy/pandas are imported on first use (load_numeric): importing pandas alone takes ~0.4 s, and an
+# --auto run with nothing new must stay well under a second.
+np = pd = None
+
+
+def load_numeric():
+    global np, pd
+    if pd is None:
+        import numpy as _np
+        import pandas as _pd
+        np, pd = _np, _pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
@@ -116,6 +131,7 @@ def read_header(path):
 
 def read_logs(path, wanted, required):
     """Read only the whitelisted columns of a ';'-separated WAM log, as text."""
+    load_numeric()
     header = read_header(path)
     missing = [c for c in required if c not in header]
     if missing:
@@ -261,6 +277,7 @@ def path_length(t, pos, t0, t1):
 
 def convert(event_path, sample_path, meta_path, participant, part, downsample=1, hand=None,
             log=print):
+    load_numeric()
     warnings = []
     sample_sid = first_session_id(sample_path)
     event_sid = first_session_id(event_path)
@@ -473,11 +490,12 @@ def load_preprocessor(path):
     return mod
 
 
-def preprocess(csv_paths, out_dir, preprocessor_path, verbose=False):
+def preprocess(csv_paths, out_dir, preprocessor_path, verbose=False, module=None):
     """Run CUBIA's per-file process_csv + write_binary on just these CSVs. The class constructor
     (which mkdirs under its own project root) and process_all_csvs (which converts EVERY csv in
     DataCSV) are deliberately bypassed."""
-    mod = load_preprocessor(preprocessor_path)
+    load_numeric()
+    mod = module or load_preprocessor(preprocessor_path)
     proc = mod.ColumnarDatasetProcessor.__new__(mod.ColumnarDatasetProcessor)
     proc.project_root = Path(out_dir)
     proc.raw_data_dir = Path(out_dir)
@@ -497,14 +515,592 @@ def preprocess(csv_paths, out_dir, preprocessor_path, verbose=False):
     return results
 
 
+# ============================================================================================
+# --auto batch mode and --restore (AUTO_IMPORT_CONTRACT.md)
+# ============================================================================================
+STATE_VERSION = 1
+SKIP_REASONS_MSG = {
+    "warmup": "warm-up program",
+    "program": "other SessionProgram than --program",
+    "no moles": "no 'Mole Spawned' event",
+    "missing Event": "no Event log with this SessionID yet",
+    "missing Sample": "no Sample log with this SessionID yet",
+    "in progress": "log files changed in the last seconds (WAM still writing)",
+    "out of order": "older than a session already imported for this participant",
+}
+ARCHIVE_SUFFIX_RE = re.compile(r" R \d{2}-\d{2}-\d{4} \d{2}\.\d{2}(?: \(\d+\))?(?=\.)")
+OUT_KINDS_EXT = (".csv", ".cdataset")
+
+
+def participant_label(pid):
+    """Contract rule: integer n -> 'P' + n zero-padded to 2 digits; otherwise 'P' + the id with
+    characters outside [A-Za-z0-9_-] removed. Empty/NULL -> None."""
+    s = (pid or "").strip()
+    if s in MISSING:
+        return None
+    # "P07" / "p7" count as the number 7, matching the dashboard's WamIaAutoImporter.ParticipantLabel.
+    m = re.fullmatch(r"[Pp]?(\d+)", s)
+    if m:
+        return f"P{int(m.group(1)):02d}"
+    s = re.sub(r"[^A-Za-z0-9_-]", "", s)
+    return ("P" + s) if s else None
+
+
+def label_number(label):
+    m = re.fullmatch(r"P(\d+)", label or "")
+    return int(m.group(1)) if m else None
+
+
+def label_sort_key(label):
+    n = label_number(label)
+    return (0, n, "") if n is not None else (1, 0, label)
+
+
+def parse_meta_ts(s):
+    try:
+        return dt_.datetime.strptime(s.strip(), TS_FORMAT)
+    except (ValueError, AttributeError):
+        return None
+
+
+def read_meta_info(path):
+    """Only the fields the batch needs, from the first data row of a Meta log (csv module, no pandas).
+    Personal columns are never kept."""
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f, delimiter=";")
+        header = next(reader, None)
+        row = next(reader, None)
+    if not header or "SessionID" not in header:
+        raise ConvertError("no header / SessionID column")
+    if row is None:
+        raise ConvertError("no data row")
+    if len(row) < len(header):
+        raise ConvertError(f"truncated row ({len(row)} of {len(header)} fields)")
+    rec = dict(zip(header, row))
+    get = lambda k: (rec.get(k) or "").strip()
+    sid = get("SessionID")
+    if sid in MISSING:
+        raise ConvertError("empty SessionID")
+    ts = get("Timestamp")
+    return {"metaFile": Path(path).name, "session": sid, "pid": get("ParticipantID"),
+            "timestamp": ts, "ts": parse_meta_ts(ts), "sessionState": get("SessionState"),
+            "program": get("SessionProgram")}
+
+
+def session_ids(path, first_only):
+    """SessionIDs in a log (first non-empty only, or all), via the csv module."""
+    found = set()
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f, delimiter=";")
+        header = next(reader, None)
+        if not header or "SessionID" not in header:
+            return found
+        i = header.index("SessionID")
+        for n, row in enumerate(reader):
+            if i < len(row) and row[i].strip() not in MISSING:
+                found.add(row[i].strip())
+                if first_only:
+                    break
+            if first_only and n > 5000:
+                break
+    return found
+
+
+def has_mole_spawned(event_path, sid):
+    with open(event_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f, delimiter=";")
+        header = next(reader, None)
+        if not header or "Event" not in header or "SessionID" not in header:
+            return False
+        ie, isd = header.index("Event"), header.index("SessionID")
+        for row in reader:
+            if len(row) > max(ie, isd) and row[ie].strip() == "Mole Spawned" and row[isd].strip() == sid:
+                return True
+    return False
+
+
+def now_local():
+    return dt_.datetime.now()
+
+
+def iso(t):
+    return t.isoformat(timespec="seconds")
+
+
+def archive_suffix(t):
+    return t.strftime(" R %d-%m-%Y %H.%M")
+
+
+def split_name(name):
+    """'P07_part2_movement.cdataset.meta' -> ('P07_part2_movement', '.cdataset.meta')."""
+    i = name.find(".")
+    return (name, "") if i < 0 else (name[:i], name[i:])
+
+
+def output_location(out, name):
+    """Active location of an output file (or its Unity .meta) by name."""
+    return (out / "ProcessedData" / name) if ".cdataset" in name else (out / name)
+
+
+def move_file(src, dst):
+    try:
+        os.replace(src, dst)
+    except OSError:   # other volume (--state elsewhere)
+        shutil.move(str(src), str(dst))
+
+
+def output_names(label, part):
+    return [f"{label}_part{part}_{k}{ext}" for ext in OUT_KINDS_EXT for k in KINDS]
+
+
+class StateError(Exception):
+    pass
+
+
+class AutoImporter:
+    def __init__(self, a, log=print):
+        self.a = a
+        self.log = log
+        self.logs = Path(a.logs) if a.logs else Path.home() / "Documents"
+        self.out = Path(a.out)
+        self.state_dir = Path(a.state) if a.state else self.out / "WamIA~"
+        self.state_path = self.state_dir / "state.json"
+        self.archive_dir = self.state_dir / "Archive"
+        self.result = {"converted": [], "replaced": [], "skipped": [], "warnings": [], "errors": [],
+                       "participants": [], "restored": []}
+        self.state = {"version": STATE_VERSION, "sessions": {}}
+        self._pre_mod = None
+        self._lock = None
+        self._saved_text = None
+
+    # ---- state ---------------------------------------------------------------------------
+    def load_state(self):
+        if not self.state_path.is_file():
+            return
+        try:
+            st = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise StateError(f"cannot read {self.state_path}: {e}")
+        if not isinstance(st, dict) or not isinstance(st.get("sessions"), dict):
+            raise StateError(f"{self.state_path} is not a WAM+IA state file")
+        if st.get("version", STATE_VERSION) > STATE_VERSION:
+            raise StateError(f"{self.state_path} has version {st.get('version')} (this converter knows {STATE_VERSION})")
+        self.state = st
+        self._saved_text = json.dumps(st, indent=1, ensure_ascii=False)
+
+    def save_state(self):
+        """Atomic: write state.json.tmp, then replace. Skipped when nothing changed."""
+        text = json.dumps(self.state, indent=1, ensure_ascii=False)
+        if text == self._saved_text:
+            return
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_name("state.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.state_path)
+        self._saved_text = text
+
+    def lock(self):
+        """One run at a time (CUBIA may start a run on Play and another from the dashboard)."""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        p = self.state_dir / "run.lock"
+        for _ in range(2):
+            try:
+                fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                self._lock = p
+                return True
+            except FileExistsError:
+                try:
+                    if time.time() - p.stat().st_mtime > 600:   # stale (crashed run)
+                        p.unlink()
+                        continue
+                except OSError:
+                    continue
+                return False
+        return False
+
+    def unlock(self):
+        if self._lock:
+            with contextlib.suppress(OSError):
+                self._lock.unlink()
+
+    def sessions(self):
+        return self.state["sessions"]
+
+    def active_holder(self, label, part):
+        for sid, s in self.sessions().items():
+            if s.get("participant") == label and s.get("part") == part and s.get("status") == "active":
+                return sid
+        return None
+
+    # ---- archive -------------------------------------------------------------------------
+    def archive_set(self, names):
+        """Archive one session's outputs with a common suffix; the ' (k)' counter (same minute)
+        is shared by the whole set so restore finds it as one set."""
+        stamp = now_local()
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+        present = [n for name in names for n in (name, name + ".meta") if output_location(self.out, n).is_file()]
+        base = archive_suffix(stamp)
+        suffix, k = base, 2
+        while any((self.archive_dir / (split_name(n)[0] + suffix + split_name(n)[1])).exists() for n in present):
+            suffix, k = f"{base} ({k})", k + 1
+        moved = []
+        for n in present:
+            stem, ext = split_name(n)
+            dst = self.archive_dir / f"{stem}{suffix}{ext}"
+            move_file(output_location(self.out, n), dst)
+            moved.append(dst.name)
+        return moved, stamp
+
+    # ---- scanning ------------------------------------------------------------------------
+    def scan_metas(self):
+        metas, bad = {}, []
+        for p in sorted(self.logs.glob("*_Meta.csv")):
+            try:
+                m = read_meta_info(p)
+            except (ConvertError, OSError, UnicodeDecodeError, csv.Error) as e:
+                bad.append((p.name, str(e)))
+                continue
+            m["path"] = p
+            old = metas.get(m["session"])
+            if old is None or p.stat().st_mtime > old["path"].stat().st_mtime:
+                metas[m["session"]] = m
+        return metas, bad
+
+    def build_index(self, kind, first_only, exclude):
+        idx = {}
+        for p in self.logs.glob(f"*_{kind}.csv"):
+            if p.name in exclude:
+                continue
+            try:
+                sids = session_ids(p, first_only)
+            except (OSError, UnicodeDecodeError, csv.Error):
+                continue
+            for sid in sids:
+                if sid not in idx or p.stat().st_mtime > idx[sid].stat().st_mtime:
+                    idx[sid] = p
+        return idx
+
+    def skip(self, m, reason, detail=""):
+        sid = m["session"]
+        old = self.sessions().get(sid, {})
+        changed = old.get("status") != "skipped" or old.get("reason") != reason
+        self.sessions()[sid] = {
+            "participant": m.get("label") or "", "part": 0, "status": "skipped", "reason": reason,
+            "metaFile": m["metaFile"], "eventFile": m.get("eventFile", ""), "sampleFile": m.get("sampleFile", ""),
+            "timestamp": m["timestamp"], "convertedAt": "", "outputs": [], "archived": old.get("archived", []),
+        }
+        if changed:   # reported once, not on every run (idempotent output)
+            self.result["skipped"].append({"session": sid, "reason": reason})
+            self.log(f"  skipped {m.get('label') or '?'} session {sid[:8]} ({m['metaFile']}): {reason}"
+                     + (f" - {detail}" if detail else ""))
+
+    # ---- conversion ----------------------------------------------------------------------
+    def preprocessor(self):
+        if self._pre_mod is None:
+            load_numeric()
+            self._pre_mod = load_preprocessor(self.a.preprocessor)
+        return self._pre_mod
+
+    def stage(self, m, label, part):
+        """Convert into <state>/staging (CSV + .cdataset). Raises on any problem; nothing active
+        is touched yet."""
+        staging = self.state_dir / "staging"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        tables, info = convert(m["eventPath"], m["samplePath"], m["path"], label, part,
+                               self.a.downsample, self.a.hand, log=self.log)
+        paths = []
+        for kind in KINDS:
+            p = staging / f"{label}_part{part}_{kind}.csv"
+            write_csv(tables[kind], p)
+            paths.append(p)
+        if not self.a.no_preprocess:
+            preprocess(paths, staging, self.a.preprocessor, self.a.verbose, module=self.preprocessor())
+        return staging, info
+
+    def install(self, staging, label, part):
+        names = []
+        (self.out / "ProcessedData").mkdir(parents=True, exist_ok=True)
+        for name in output_names(label, part):
+            src = (staging / "ProcessedData" / name) if name.endswith(".cdataset") else (staging / name)
+            if src.is_file():
+                move_file(src, output_location(self.out, name))
+                names.append(name)
+        shutil.rmtree(staging, ignore_errors=True)
+        return names
+
+    def warn(self, text):
+        self.result["warnings"].append(text)
+        self.log(f"  WARNING: {text}")
+
+    def import_session(self, m, label, part, old_sid):
+        sid = m["session"]
+        try:
+            staging, info = self.stage(m, label, part)
+        except Exception as e:   # one bad session never stops the batch
+            shutil.rmtree(self.state_dir / "staging", ignore_errors=True)
+            msg = str(e).splitlines()[0] if str(e) else type(e).__name__
+            if "Mole Spawned" in msg:
+                self.skip(m, "no moles")
+            else:
+                self.result["errors"].append(f"{label} session {sid}: {msg}")
+                self.skip(m, "error", msg)
+            return False
+
+        archived, stamp = [], None
+        if old_sid:
+            old = self.sessions()[old_sid]
+            archived, stamp = self.archive_set(old.get("outputs", []))
+            old.update(status="replaced", archived=archived, archivedAt=stamp.isoformat(), replacedBy=sid)
+        # files at the target names that the state does not know about (e.g. a manual run): archive too
+        foreign, _ = self.archive_set(output_names(label, part))
+        if foreign:
+            self.warn(f"{label} part {part}: existing files not made by the auto-import were archived: "
+                      + ", ".join(foreign))
+        names = self.install(staging, label, part)
+        self.sessions()[sid] = {
+            "participant": label, "part": part, "status": "active", "reason": "",
+            "metaFile": m["metaFile"], "eventFile": m["eventPath"].name, "sampleFile": m["samplePath"].name,
+            "timestamp": m["timestamp"], "convertedAt": iso(now_local()), "outputs": names, "archived": [],
+        }
+        self.save_state()
+        files = [n for n in names if n.endswith(".cdataset")] or names
+        self.result["converted"].append({"participant": label, "part": part, "session": sid, "files": files})
+        self.log(f"  converted {label} part {part} <- session {sid[:8]} ({m['metaFile']}), "
+                 f"main hand {info['main_hand']}")
+        for w in info["warnings"]:
+            self.log(f"    note: {w}")
+        if old_sid:
+            self.result["replaced"].append({"participant": label, "part": part, "oldSession": old_sid,
+                                            "newSession": sid, "archived": archived})
+            self.log(f"  replaced {label} part {part}: session {old_sid[:8]} -> {sid[:8]}; "
+                     f"old files archived in {self.archive_dir}")
+        return True
+
+    # ---- the batch -----------------------------------------------------------------------
+    def run(self):
+        t0 = time.perf_counter()
+        if not self.logs.is_dir():
+            raise StateError(f"--logs folder not found: {self.logs}")
+        self.load_state()
+        S = self.sessions()
+        metas, bad = self.scan_metas()
+        for name, why in bad:
+            self.result["skipped"].append({"session": name, "reason": "unreadable Meta"})
+            self.log(f"  skipped {name}: unreadable Meta ({why}); re-checked next run")
+        for m in metas.values():
+            m["label"] = participant_label(m["pid"])
+        self.result["participants"] = sorted({m["label"] for m in metas.values() if m["label"]}, key=label_sort_key)
+        self.log(f"WAM+IA auto-import: {len(metas)} session(s) in {self.logs}, {len(S)} in state")
+
+        # 1) sessions that still need a decision
+        pending = []
+        prog = (self.a.program or "").strip().lower()
+        for sid, m in metas.items():
+            st = S.get(sid, {})
+            if st.get("status") in ("active", "replaced"):
+                continue
+            if "warmup" in m["program"].lower().replace("-", "").replace(" ", "").replace("_", ""):
+                self.skip(m, "warmup")
+            elif prog and m["program"].lower() != prog:
+                self.skip(m, "program")
+            elif not m["label"]:
+                self.skip(m, "no participant")
+            else:
+                pending.append(m)
+        if not pending:
+            return self.finish(t0)
+
+        # 2) pair with Event/Sample by SessionID (files of imported sessions are not re-read)
+        known = {S[s].get(k) for s in S if S[s].get("status") in ("active", "replaced")
+                 for k in ("eventFile", "sampleFile")}
+        ev_idx = smp_idx = None
+        now = time.time()
+        candidates = []
+        for m in pending:
+            sid = m["session"]
+            same = m["path"].with_name(m["path"].name[:-len("_Meta.csv")] + "_Event.csv")
+            try:
+                if same.is_file() and sid in session_ids(same, False):
+                    ev = same
+                else:
+                    ev_idx = ev_idx if ev_idx is not None else self.build_index("Event", False, known)
+                    ev = ev_idx.get(sid)
+                if ev is None:
+                    self.skip(m, "missing Event")
+                    continue
+                m["eventPath"], m["eventFile"] = ev, ev.name
+                smp_idx = smp_idx if smp_idx is not None else self.build_index("Sample", True, known)
+                sp = smp_idx.get(sid)
+                if sp is None:
+                    self.skip(m, "missing Sample")
+                    continue
+                m["samplePath"], m["sampleFile"] = sp, sp.name
+                newest = max(p.stat().st_mtime for p in (m["path"], ev, sp))
+                if now - newest < self.a.settle_seconds:
+                    self.skip(m, "in progress")
+                    continue
+                if not has_mole_spawned(ev, sid):
+                    self.skip(m, "no moles")
+                    continue
+            except (OSError, UnicodeDecodeError, csv.Error) as e:
+                self.skip(m, "error", str(e))
+                continue
+            candidates.append(m)
+
+        # 3) assign parts in Meta Timestamp order (contract "Which session is which part")
+        def key(m):
+            return (m["ts"] or dt_.datetime.max, m["timestamp"], m["session"])
+        candidates.sort(key=key)
+        meta_by_sid = metas
+        for i, m in enumerate(candidates):
+            label, sid = m["label"], m["session"]
+            mine = [(s, S[s]) for s in S if S[s].get("participant") == label
+                    and S[s].get("status") in ("active", "replaced")]
+            latest = max(mine, key=lambda x: (parse_meta_ts(x[1].get("timestamp", "")) or dt_.datetime.min,
+                                              x[1].get("timestamp", "")), default=None)
+            if latest and key(m) < ((parse_meta_ts(latest[1]["timestamp"]) or dt_.datetime.max),
+                                    latest[1]["timestamp"], latest[0]):
+                self.skip(m, "out of order")
+                self.warn(f"{label} session {sid} ({m['metaFile']}) is older than the already imported "
+                          f"session {latest[0]}; not imported automatically (use the single-session mode)")
+                continue
+            later_same = any(c["label"] == label for c in candidates[i + 1:])
+            latest_meta = meta_by_sid.get(latest[0]) if latest else None
+            latest_interrupted = bool(latest and latest[1].get("status") == "active" and latest_meta
+                                      and latest_meta["sessionState"].strip().lower() == "interrupted")
+            if latest_interrupted:
+                part, old = latest[1]["part"], latest[0]
+            elif not self.active_holder(label, 1):
+                part, old = 1, None
+            elif not self.active_holder(label, 2):
+                part, old = 2, None
+            else:
+                part, old = 2, self.active_holder(label, 2)
+
+            if m["sessionState"].strip().lower() == "interrupted" and later_same:
+                # restarted round: replaced by the next session before it was ever imported
+                nxt = next(c for c in candidates[i + 1:] if c["label"] == label)
+                S[sid] = {"participant": label, "part": part, "status": "replaced", "reason": "interrupted",
+                          "metaFile": m["metaFile"], "eventFile": m["eventFile"], "sampleFile": m["sampleFile"],
+                          "timestamp": m["timestamp"], "convertedAt": "", "outputs": [], "archived": [],
+                          "replacedBy": nxt["session"]}
+                self.save_state()
+                self.result["replaced"].append({"participant": label, "part": part, "oldSession": sid,
+                                                "newSession": nxt["session"], "archived": []})
+                self.log(f"  replaced {label} part {part}: interrupted session {sid[:8]} -> {nxt['session'][:8]} "
+                         f"(not imported)")
+                continue
+
+            if not mine:   # first import of this participant: ascending-number check
+                nums = sorted({label_number(S[s]["participant"]) for s in S
+                               if S[s].get("status") in ("active", "replaced")} - {None})
+                n = label_number(label)
+                if nums and n is not None and n != nums[-1] + 1:
+                    self.warn(f"participant {label} is not the next number after P{nums[-1]:02d} "
+                              f"(expected P{nums[-1] + 1:02d}); imported anyway")
+            self.import_session(m, label, part, old)
+        self.save_state()
+        return self.finish(t0)
+
+    def finish(self, t0):
+        self.save_state()
+        r = self.result
+        self.log(f"  done in {time.perf_counter() - t0:.2f} s: {len(r['converted'])} converted, "
+                 f"{len(r['replaced'])} replaced, {len(r['skipped'])} skipped, {len(r['errors'])} error(s)")
+        return 0
+
+    # ---- restore -------------------------------------------------------------------------
+    def restore(self, who, part):
+        self.load_state()
+        S = self.sessions()
+        label = participant_label(who[1:] if re.fullmatch(r"[Pp]\d+", who.strip()) else who)
+        cands = [(s, v) for s, v in S.items() if v.get("participant") == label and v.get("part") == part
+                 and v.get("status") == "replaced" and v.get("archived")]
+        if not cands:
+            raise StateError(f"nothing archived for {label} part {part}")
+        sid, rec = max(cands, key=lambda x: x[1].get("archivedAt", ""))
+        cur = self.active_holder(label, part)
+        archived = []
+        if cur:
+            archived, stamp = self.archive_set(S[cur].get("outputs", []))
+            S[cur].update(status="replaced", archived=archived, archivedAt=stamp.isoformat(), replacedBy=sid)
+        foreign, _ = self.archive_set(output_names(label, part))
+        if foreign:
+            self.warn(f"{label} part {part}: untracked files archived: " + ", ".join(foreign))
+        (self.out / "ProcessedData").mkdir(parents=True, exist_ok=True)
+        back = []
+        for an in rec["archived"]:
+            src = self.archive_dir / an
+            if not src.is_file():
+                self.result["errors"].append(f"archived file missing: {src}")
+                continue
+            name = ARCHIVE_SUFFIX_RE.sub("", an, count=1)
+            move_file(src, output_location(self.out, name))
+            back.append(name)
+        rec.update(status="active", archived=[], replacedBy="", restoredAt=iso(now_local()))
+        rec["outputs"] = [n for n in back if not n.endswith(".meta")] or rec.get("outputs", [])
+        self.save_state()
+        self.result["restored"].append({"participant": label, "part": part, "session": sid, "files": back})
+        if cur:
+            self.result["replaced"].append({"participant": label, "part": part, "oldSession": cur,
+                                            "newSession": sid, "archived": archived})
+        self.log(f"restored {label} part {part} <- session {sid[:8]} ({len(back)} file(s))"
+                 + (f"; session {cur[:8]} archived (undo with the same command)" if cur else ""))
+        return 0
+
+
+def run_batch(a):
+    imp = AutoImporter(a)
+    code = 0
+    try:
+        if not imp.lock():
+            imp.result["errors"].append("another WAM+IA import is running; try again in a moment")
+            imp.log("another WAM+IA import is running")
+        else:
+            try:
+                if a.restore:
+                    try:
+                        part = int(a.restore[1])
+                    except ValueError:
+                        raise StateError(f"--restore part must be 1 or 2, not {a.restore[1]!r}")
+                    code = imp.restore(a.restore[0], part)
+                else:
+                    code = imp.run()
+            finally:
+                imp.unlock()
+    except StateError as e:
+        imp.result["errors"].append(str(e))
+        print(f"ERROR: {e}", file=sys.stderr)
+        code = 2
+    if a.json:
+        print("WAMIA_RESULT " + json.dumps(imp.result, ensure_ascii=True, separators=(",", ":")), flush=True)
+    return code
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Whack-A-Mole VR logs (one play-through) -> CUBIA datasets")
     ap.add_argument("--event", help="..._Event.csv")
     ap.add_argument("--sample", help="..._Sample.csv")
     ap.add_argument("--meta", help="..._Meta.csv (optional; only SessionID and SamplingFrequency are read)")
-    ap.add_argument("--logs", help="folder with WAM logs: use the newest Event/Sample/Meta set sharing a SessionID")
-    ap.add_argument("--participant", required=True, help="e.g. P07 (normalised like the CUBIA session log)")
-    ap.add_argument("--part", required=True, type=int, choices=[1, 2], help="study part (1 or 2)")
+    ap.add_argument("--logs", help="folder with WAM logs: use the newest Event/Sample/Meta set sharing a SessionID "
+                                   "(--auto: every session in it; default ~/Documents)")
+    ap.add_argument("--participant", help="e.g. P07 (normalised like the CUBIA session log)")
+    ap.add_argument("--part", type=int, choices=[1, 2], help="study part (1 or 2)")
+    ap.add_argument("--auto", action="store_true",
+                    help="batch: import every new session in --logs (see AUTO_IMPORT_CONTRACT.md)")
+    ap.add_argument("--restore", nargs=2, metavar=("PARTICIPANT", "PART"),
+                    help="move the most recent archived files of PARTICIPANT/PART back (current ones are archived)")
+    ap.add_argument("--state", help="--auto/--restore state folder (default <out>/WamIA~)")
+    ap.add_argument("--program", help="--auto: only sessions with this SessionProgram (case-insensitive)")
+    ap.add_argument("--json", action="store_true", help="--auto/--restore: end with a 'WAMIA_RESULT {json}' line")
+    ap.add_argument("--settle-seconds", type=float, default=5.0,
+                    help="--auto: skip sessions whose logs changed less than this many seconds ago (default 5)")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help=f"output folder (default {DEFAULT_OUT})")
     ap.add_argument("--downsample", type=int, default=1, help="keep every Nth sample (default 1 = all)")
     ap.add_argument("--hand", choices=["right", "left"], help="force the main hand (default: auto)")
@@ -513,6 +1109,18 @@ def main(argv=None):
                     help="path to CUBIA's preprocess_csv_columnar.py")
     ap.add_argument("--verbose", action="store_true", help="show the preprocessor's own output")
     a = ap.parse_args(argv)
+    if a.auto or a.restore:
+        if a.auto and a.restore:
+            ap.error("use either --auto or --restore")
+        if a.event or a.sample or a.meta or a.participant or a.part:
+            ap.error("--auto/--restore take no --event/--sample/--meta/--participant/--part")
+        if a.downsample < 1:
+            ap.error("--downsample must be >= 1")
+        return run_batch(a)
+    missing = [f for f, v in (("--participant", a.participant), ("--part", a.part)) if v is None]
+    if missing:
+        ap.error("the following arguments are required: " + ", ".join(missing))
+    load_numeric()
 
     t_start = time.perf_counter()
     try:

@@ -29,6 +29,9 @@ namespace DataViz.Study
             Guard(t, "PlotStateDiff", () => TestDiff(t));
             Guard(t, "PlotStateJson", () => TestJson(t));
             Guard(t, "PreparedViews", () => TestPreparedViews(t));
+            Guard(t, "WamIa label", () => TestWamIaLabel(t));
+            Guard(t, "WamIa scan", () => TestWamIaScan(t));
+            Guard(t, "WamIa result", () => TestWamIaResult(t));
 
             var sb = new StringBuilder();
             sb.Append("PASS ").Append(t.Pass).Append(" / FAIL ").Append(t.Failures.Count);
@@ -368,6 +371,129 @@ namespace DataViz.Study
             t.Eq("views combined glyph", "0", I(cGlyph));
 
             t.True("views resolve null dataset", !PreparedViews.TryResolve(path, null, out _, out _, out _, out _, out _, out _, out _, out _));
+        }
+
+        // ---- WAM+IA auto import -----------------------------------------------------------
+
+        static void TestWamIaLabel(Tally t)
+        {
+            t.Eq("label 7", "P07", WamIaAutoImporter.ParticipantLabel("7"));
+            t.Eq("label 12", "P12", WamIaAutoImporter.ParticipantLabel("12"));
+            t.Eq("label 0", "P00", WamIaAutoImporter.ParticipantLabel("0"));
+            t.Eq("label P07", "P07", WamIaAutoImporter.ParticipantLabel("P07"));
+            t.Eq("label p7", "P07", WamIaAutoImporter.ParticipantLabel("p7"));
+            t.Eq("label spaces", "P03", WamIaAutoImporter.ParticipantLabel(" 3 "));
+            t.Eq("label 007", "P07", WamIaAutoImporter.ParticipantLabel("007"));
+            t.Eq("label 123", "P123", WamIaAutoImporter.ParticipantLabel("123"));
+            t.Eq("label text", "Pabc", WamIaAutoImporter.ParticipantLabel("abc!"));
+            t.Eq("label NULL", "", WamIaAutoImporter.ParticipantLabel("NULL"));
+            t.Eq("label empty", "", WamIaAutoImporter.ParticipantLabel("  "));
+            t.Eq("label only junk", "", WamIaAutoImporter.ParticipantLabel("!?"));
+
+            // Dropdown label → the converter's file names and the session log name, unchanged.
+            t.Eq("label → views file", "P07_part1_movement.cdataset",
+                PreparedViews.FileFor(WamIaAutoImporter.ParticipantLabel("7"), 1, PreparedViews.KindMovement));
+            t.Eq("label → normalise P07", "P07", PreparedViews.NormaliseParticipant("P07"));
+            t.Eq("label → normalise Pabc", "Pabc", PreparedViews.NormaliseParticipant(WamIaAutoImporter.ParticipantLabel("abc!")));
+            t.Eq("label → log file", "P12_part2_20261106_090503.csv",
+                StudyLogWriter.BuildFileName(WamIaAutoImporter.ParticipantLabel("12"), 2, new DateTime(2026, 11, 6, 9, 5, 3)));
+
+            List<string> sorted = WamIaAutoImporter.SortParticipants(new[] { "P10", "Pabc", "P02", "P02", null, "", "P100" });
+            t.Eq("sort", "P02,P10,P100,Pabc", string.Join(",", sorted));
+            t.Eq("default highest", "P100", WamIaAutoImporter.DefaultParticipant(sorted));
+            t.Eq("default text only", "Pzz", WamIaAutoImporter.DefaultParticipant(new List<string> { "Paa", "Pzz" }));
+            t.True("default empty", WamIaAutoImporter.DefaultParticipant(new List<string>()) == null);
+
+            var have = new[] { "P07_part1_movement.cdataset", "p07_PART1_moles.cdataset" };
+            t.Eq("missing files", "P07_part1_combined.cdataset", string.Join(",", PreparedViews.MissingFiles("P07", 1, have)));
+            t.Eq("missing files part 2", "3", I(PreparedViews.MissingFiles("P07", 2, have).Count));
+
+            t.Eq("args plain", "a.py --auto", WamIaAutoImporter.BuildArguments(new[] { "a.py", "--auto" }));
+            t.Eq("args spaces", "\"C:\\My Docs\\x.py\" --logs \"C:\\My Docs\\\\\"",
+                WamIaAutoImporter.BuildArguments(new[] { @"C:\My Docs\x.py", "--logs", @"C:\My Docs\" }));
+            t.Eq("args quote + empty", "\"a\\\"b\" \"\"", WamIaAutoImporter.BuildArguments(new[] { "a\"b", "" }));
+        }
+
+        static void TestWamIaScan(Tally t)
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "cubia_wamia_selftest_" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(folder);
+                const string header = "Age;Email;ParticipantID;SessionID;SessionProgram;SessionState;Timestamp";
+                File.WriteAllText(Path.Combine(folder, "log_a_Meta.csv"),
+                    "\uFEFF" + header + "\n15;x@y.z;7;s1;TestPattern;Done;2026-11-06 10:11:31.0872\n");
+                // Second row repeats participant 7 as "07": one label only.
+                File.WriteAllText(Path.Combine(folder, "log_b_Meta.csv"),
+                    header + "\r\n20;NULL;3;s2;TestPattern;Done;2026-11-06 11:00:00.0000\r\n20;NULL;07;s3;TestPattern;Done;2026-11-06 11:30:00.0000\r\n");
+                File.WriteAllText(Path.Combine(folder, "log_c_Meta.csv"),
+                    header + "\n30;NULL;0;s4;Warmup;Done;2026-11-06 12:00:00.0000\n" +
+                    "31;NULL;9"); // a row still being written: fewer cells than the header, skipped
+                File.WriteAllText(Path.Combine(folder, "log_d_Meta.csv"), header + "\n"); // header only
+                File.WriteAllText(Path.Combine(folder, "log_e_Meta.csv"), "");            // empty
+                File.WriteAllText(Path.Combine(folder, "log_a_Event.csv"), header + "\n1;x;99;s1;P;D;T\n"); // not a Meta file
+
+                t.Eq("scan labels", "P00,P03,P07", string.Join(",", WamIaAutoImporter.ScanParticipants(folder)));
+
+                // A file another program holds open for writing must not break the scan.
+                using (new FileStream(Path.Combine(folder, "log_a_Meta.csv"), FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+                {
+                    List<string> whileOpen = WamIaAutoImporter.ScanParticipants(folder);
+                    t.True("scan while file open", whileOpen.Contains("P03") && whileOpen.Contains("P00"));
+                }
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(folder, true);
+                }
+                catch (Exception)
+                {
+                    // Temp folder: left for the OS to clean up.
+                }
+            }
+
+            t.Eq("scan missing folder", "0", I(WamIaAutoImporter.ScanParticipants(Path.Combine(folder, "nope")).Count));
+            t.Eq("scan null folder", "0", I(WamIaAutoImporter.ScanParticipants(null).Count));
+        }
+
+        static void TestWamIaResult(Tally t)
+        {
+            const string line = "WAMIA_RESULT {\"converted\": [{\"participant\": \"P07\", \"part\": 1, \"session\": \"s1\", " +
+                                "\"files\": [\"P07_part1_movement.cdataset\", \"P07_part1_moles.cdataset\", \"P07_part1_combined.cdataset\"]}], " +
+                                "\"replaced\": [{\"participant\": \"P07\", \"part\": 2, \"oldSession\": \"s2\", \"newSession\": \"s3\", " +
+                                "\"archived\": [\"P07_part2_movement R 09-11-2026 14.35.cdataset\"]}], " +
+                                "\"skipped\": [{\"session\": \"s0\", \"reason\": \"warmup\"}], " +
+                                "\"warnings\": [\"Participant P09 follows P07: number P08 skipped\"], \"errors\": [], " +
+                                "\"participants\": [\"P00\", \"P07\"]}";
+
+            bool ok = WamIaAutoImporter.TryParseResultLine(line, out WamIaImportResult r);
+            t.True("result parsed", ok && r != null);
+            if (!ok || r == null) return;
+
+            t.Eq("result converted count", "1", I(r.converted.Length));
+            t.Eq("result converted participant", "P07", r.converted[0].participant);
+            t.Eq("result converted part", "1", I(r.converted[0].part));
+            t.Eq("result converted files", "3", I(r.converted[0].files.Length));
+            t.Eq("result replaced", "P07/2/s2/s3", r.replaced[0].participant + "/" + I(r.replaced[0].part) + "/" +
+                                                    r.replaced[0].oldSession + "/" + r.replaced[0].newSession);
+            t.Eq("result skipped", "s0 warmup", r.skipped[0].session + " " + r.skipped[0].reason);
+            t.Eq("result warnings", "1", I(r.warnings.Length));
+            t.Eq("result errors empty", "0", I(r.errors.Length));
+            t.Eq("result participants", "P00,P07", string.Join(",", r.participants));
+            t.True("result has changes", r.HasChanges);
+            t.Eq("result replaced message", "P07 part 2 replaced by a newer session; old files archived (R 09-11-2026 14.35)",
+                WamIaAutoImporter.ReplacedMessage(r.replaced[0]));
+
+            // Missing keys become empty arrays; anything else is rejected.
+            bool sparse = WamIaAutoImporter.TryParseResultLine("WAMIA_RESULT {\"participants\": [\"P01\"]}", out WamIaImportResult s);
+            t.True("result sparse", sparse && s.converted != null && s.converted.Length == 0 && s.errors != null &&
+                                    s.participants.Length == 1 && !s.HasChanges);
+            t.True("result wrong prefix", !WamIaAutoImporter.TryParseResultLine("RESULT {}", out _));
+            t.True("result not json", !WamIaAutoImporter.TryParseResultLine("WAMIA_RESULT oops", out _));
+            t.True("result broken json", !WamIaAutoImporter.TryParseResultLine("WAMIA_RESULT {\"converted\": [", out _));
+            t.True("result null", !WamIaAutoImporter.TryParseResultLine(null, out _));
         }
 
         // ---- plumbing ---------------------------------------------------------------------

@@ -10,6 +10,14 @@ using UnityEngine.UIElements;
 
 namespace DataViz.Study
 {
+    /// <summary>Severity of a dashboard toast: sets its colour and how long it stays.</summary>
+    public enum ToastKind
+    {
+        Info,
+        Warning,
+        Error,
+    }
+
     /// <summary>
     /// Desktop-only facilitator dashboard (WP2): a second view on MultiplayerScatterplotManager next
     /// to CUBIA's VR menu. It calls the same Request…Rpc methods as ScatterplotUI (same "None" = -1
@@ -26,6 +34,10 @@ namespace DataViz.Study
         const int k_RecentRows = 10;
         const float k_SliderCommitDelay = 0.4f;
         const float k_FlashSeconds = 4f;
+        const string k_NoParticipants = "No participants yet";
+        const int k_MaxVisibleToasts = 4;
+        const int k_MaxQueuedToasts = 20; // older ones beyond this are dropped
+        const int k_MaxToastChars = 400;   // full text stays in the Console
         static readonly CultureInfo k_Inv = CultureInfo.InvariantCulture;
 
         /// <summary>Set by StudyDashboardBootstrap: the runtime PanelSettings this dashboard owns.</summary>
@@ -41,10 +53,12 @@ namespace DataViz.Study
         // Frame
         VisualElement m_Root;
         Button m_MinimiseButton;
+        VisualElement m_ToastArea;
         // Session
-        TextField m_ParticipantField, m_LogFolderField;
+        DropdownField m_ParticipantField;
+        TextField m_LogFolderField;
         DropdownField m_PartField;
-        Button m_SessionButton, m_LogFolderApply;
+        Button m_SessionButton, m_LogFolderApply, m_ImportButton;
         Label m_SessionTime, m_SessionStatus;
         // Prepared views (index i = PreparedViews.All[i])
         readonly Button[] m_ViewButtons = new Button[3];
@@ -82,6 +96,17 @@ namespace DataViz.Study
         List<string> m_Datasets = new();
         readonly List<PlotSnapshot> m_UndoStack = new();
         readonly List<(string text, string cssClass)> m_Recent = new(); // newest first
+        List<string> m_Participants = new(); // real labels only (no placeholder), sorted
+        bool m_ImportShownRunning;
+
+        /// <summary>One toast; Remaining counts down only while it is among the visible ones.</summary>
+        sealed class Toast
+        {
+            public VisualElement Element;
+            public float Remaining;
+        }
+
+        readonly List<Toast> m_Toasts = new(); // newest first
 
         // Value lists per column index (filter values / glyph labels), cleared on dataset load:
         // building them scans every row, and OnPlotSettingsChanged fires every frame during playback.
@@ -142,18 +167,24 @@ namespace DataViz.Study
                 m_Logger.RowWritten += OnRowWritten;
                 m_Logger.SessionStateChanged += RefreshSession;
                 if (m_LogFolderField != null) m_LogFolderField.SetValueWithoutNotify(m_Logger.LogFolder ?? "");
-                if (m_ParticipantField != null && !string.IsNullOrEmpty(m_Logger.ParticipantId))
-                    m_ParticipantField.SetValueWithoutNotify(m_Logger.ParticipantId);
                 if (m_PartField != null && m_Logger.Part >= 1 && m_Logger.Part <= 2)
                     m_PartField.SetValueWithoutNotify(m_Logger.Part.ToString(k_Inv));
             }
 
+            WamIaAutoImporter.Completed += OnImportCompleted;
+
             m_Initialised = true;
             RescanDatasets();
+            // Meta files give the list at once; the converter's own list follows on Completed.
+            RefreshParticipants(WamIaAutoImporter.Last?.participants);
+            if (m_Logger != null && !string.IsNullOrEmpty(m_Logger.ParticipantId))
+                SelectParticipant(PreparedViews.NormaliseParticipant(m_Logger.ParticipantId));
             OnDatasetLoaded();
             RefreshSession();
+            RefreshViewsStatus();
             RebuildRecentList();
             UpdateUndoButton();
+            UpdateImportButton();
         }
 
         void QueryElements(VisualElement r)
@@ -161,8 +192,11 @@ namespace DataViz.Study
             m_Root = Find<VisualElement>(r, DashboardIds.Root);
             Find<ScrollView>(r, DashboardIds.Body);
             m_MinimiseButton = Find<Button>(r, DashboardIds.MinimiseButton);
+            m_ToastArea = Find<VisualElement>(r, DashboardIds.ToastArea);
+            if (m_ToastArea != null) m_ToastArea.pickingMode = PickingMode.Ignore; // the gaps between toasts stay click-through
 
-            m_ParticipantField = Find<TextField>(r, DashboardIds.ParticipantField);
+            m_ParticipantField = Find<DropdownField>(r, DashboardIds.ParticipantField);
+            m_ImportButton = Find<Button>(r, DashboardIds.ImportButton);
             m_PartField = Find<DropdownField>(r, DashboardIds.PartField);
             m_SessionButton = Find<Button>(r, DashboardIds.SessionButton);
             m_SessionTime = Find<Label>(r, DashboardIds.SessionTime);
@@ -277,6 +311,10 @@ namespace DataViz.Study
 
             OnClick(m_SessionButton, ToggleSession);
             OnClick(m_LogFolderApply, ApplyLogFolder);
+            OnClick(m_ImportButton, StartImport);
+            // Not through OnChoice: these only change what the prepared views will load.
+            m_ParticipantField?.RegisterValueChangedCallback(_ => RefreshViewsStatus());
+            m_PartField?.RegisterValueChangedCallback(_ => RefreshViewsStatus());
 
             for (int i = 0; i < m_ViewButtons.Length && i < PreparedViews.All.Count; i++)
             {
@@ -360,6 +398,7 @@ namespace DataViz.Study
                 m_Logger.RowWritten -= OnRowWritten;
                 m_Logger.SessionStateChanged -= RefreshSession;
             }
+            WamIaAutoImporter.Completed -= OnImportCompleted;
             if (OwnedPanelSettings != null)
                 Destroy(OwnedPanelSettings);
         }
@@ -373,6 +412,9 @@ namespace DataViz.Study
             HandleHotkeys();
             CheckSliderCommit(m_PointDrag, CommitPointSize);
             CheckSliderCommit(m_ScrubDrag, CommitScrub);
+            UpdateToasts();
+            // Runs also start from the bootstrap and other callers, so follow IsRunning here.
+            if (m_ImportShownRunning != WamIaAutoImporter.IsRunning) UpdateImportButton();
 
             if (Time.unscaledTime >= m_NextTick)
             {
@@ -391,7 +433,7 @@ namespace DataViz.Study
                 ToggleMinimised();
 
             GetFocus(out bool anyFocused, out bool requestFocused, out bool otherTextFocused);
-            if (otherTextFocused) return; // typing in participant / folder field: keys belong to it
+            if (otherTextFocused) return; // typing in the log folder field: keys belong to it
 
             if (keyboard.f9Key.wasPressedThisFrame)
                 LogMarker();
@@ -983,17 +1025,13 @@ namespace DataViz.Study
         {
             if (m_Manager == null || view == null) return;
 
-            string participant = m_ParticipantField != null ? (m_ParticipantField.value ?? "").Trim() : "";
-            if (participant.Length == 0 && m_Logger != null && m_Logger.IsLogging)
-                participant = m_Logger.ParticipantId ?? "";
+            string participant = CurrentParticipant();
             if (participant.Length == 0)
             {
-                SetViewsStatus("Enter a participant ID in Session first");
+                SetViewsStatus("Pick a participant in Session first (none yet: run WAM, then Import new logs)");
                 return;
             }
-            int part = 1;
-            if (m_PartField != null && !int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out part))
-                part = 1;
+            int part = SelectedPart();
 
             string wanted = PreparedViews.FileFor(participant, part, view.Kind);
             string who = $"{PreparedViews.NormaliseParticipant(participant)} part {part.ToString(k_Inv)}";
@@ -1013,7 +1051,7 @@ namespace DataViz.Study
             string rescanHint = files.SequenceEqual(m_Datasets) ? "" : " · dataset list is out of date: press Rescan";
             if (file == null)
             {
-                SetViewsStatus($"Run the converter for {who} first (missing {wanted}){rescanHint}");
+                SetViewsStatus($"{who} not imported yet (missing {wanted}): press Import new logs{rescanHint}");
                 return;
             }
 
@@ -1140,11 +1178,14 @@ namespace DataViz.Study
             }
             else
             {
-                string participant = m_ParticipantField != null ? (m_ParticipantField.value ?? "").Trim() : "";
-                int part = 1;
-                if (m_PartField != null && !int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out part))
-                    part = 1;
-                m_SessionMessage = m_Logger.StartSession(participant, part, out string error) ? null : error;
+                string participant = SelectedParticipant();
+                if (participant.Length == 0)
+                {
+                    m_SessionMessage = "No participant selected: run WAM, then Import new logs";
+                    RefreshSession();
+                    return;
+                }
+                m_SessionMessage = m_Logger.StartSession(participant, SelectedPart(), out string error) ? null : error;
             }
             RefreshSession();
         }
@@ -1172,9 +1213,10 @@ namespace DataViz.Study
             if (m_SessionButton != null)
             {
                 m_SessionButton.text = logging ? "Stop logging" : "Start logging";
-                m_SessionButton.SetEnabled(m_Logger != null);
+                // Stopping must always work; starting needs a participant from the WAM logs.
+                m_SessionButton.SetEnabled(m_Logger != null && (logging || HasParticipants));
             }
-            m_ParticipantField?.SetEnabled(!logging);
+            m_ParticipantField?.SetEnabled(!logging && HasParticipants);
             m_PartField?.SetEnabled(!logging);
             m_LogFolderField?.SetEnabled(!logging);
             m_LogFolderApply?.SetEnabled(!logging && m_Logger != null);
@@ -1185,9 +1227,14 @@ namespace DataViz.Study
                     ? Path.GetFileName(m_Logger.CurrentFilePath) : null;
                 if (!string.IsNullOrEmpty(m_SessionMessage))
                     m_SessionStatus.text = file != null ? $"{m_SessionMessage} · {file}" : m_SessionMessage;
+                else if (file != null)
+                    m_SessionStatus.text = $"Logging to {file}";
                 else
-                    m_SessionStatus.text = file != null ? $"Logging to {file}" : "Not logging";
+                    m_SessionStatus.text = HasParticipants ? "Not logging"
+                        : "Not logging · no participants yet: run a WAM session, then press Import new logs";
             }
+            for (int i = 0; i < m_ViewButtons.Length; i++)
+                m_ViewButtons[i]?.SetEnabled(logging || HasParticipants);
 
             m_LogButton?.SetEnabled(logging);
             m_MarkerButton?.SetEnabled(logging);
@@ -1205,6 +1252,144 @@ namespace DataViz.Study
             double seconds = IsLogging ? Math.Max(0d, m_Logger.SessionTime) : 0d;
             int total = (int)seconds;
             m_SessionTime.text = $"{total / 60:00}:{total % 60:00}";
+        }
+
+        // ================================================================== participants + WAM import
+
+        bool HasParticipants => m_Participants.Count > 0;
+
+        /// <summary>The dropdown's participant label ("P07"), or "" when there is none (placeholder shown).</summary>
+        string SelectedParticipant()
+        {
+            if (m_ParticipantField == null || !HasParticipants) return "";
+            string value = (m_ParticipantField.value ?? "").Trim();
+            return m_Participants.Contains(value) ? value : "";
+        }
+
+        /// <summary>The selected participant, or the logging session's one when nothing is selected.</summary>
+        string CurrentParticipant()
+        {
+            string participant = SelectedParticipant();
+            if (participant.Length == 0 && IsLogging)
+                participant = m_Logger.ParticipantId ?? "";
+            return participant;
+        }
+
+        int SelectedPart()
+        {
+            if (m_PartField != null && int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out int part))
+                return part;
+            return 1;
+        }
+
+        /// <summary>
+        /// Rebuilds the participant choices: labels from the WAM Meta files plus <paramref name="extra"/>
+        /// (the converter's list) plus the logging session's participant. Keeps the current selection
+        /// when it still exists, otherwise picks the highest participant number. With no participants
+        /// a single disabled "No participants yet" choice is shown.
+        /// </summary>
+        void RefreshParticipants(IEnumerable<string> extra)
+        {
+            var all = new List<string>(WamIaAutoImporter.ScanParticipants(WamIaAutoImporter.LogFolder));
+            if (extra != null) all.AddRange(extra); // already labels: ParticipantLabel is not idempotent for "Pabc"
+            if (IsLogging && !string.IsNullOrEmpty(m_Logger.ParticipantId))
+                all.Add(PreparedViews.NormaliseParticipant(m_Logger.ParticipantId));
+
+            string current = SelectedParticipant();
+            m_Participants = WamIaAutoImporter.SortParticipants(all);
+
+            if (m_ParticipantField != null)
+            {
+                if (m_Participants.Count == 0)
+                {
+                    m_ParticipantField.choices = new List<string> { k_NoParticipants };
+                    m_ParticipantField.SetValueWithoutNotify(k_NoParticipants);
+                }
+                else
+                {
+                    m_ParticipantField.choices = new List<string>(m_Participants);
+                    string pick = m_Participants.Contains(current) ? current : WamIaAutoImporter.DefaultParticipant(m_Participants);
+                    m_ParticipantField.SetValueWithoutNotify(pick ?? m_Participants[0]);
+                }
+            }
+            RefreshSession();
+        }
+
+        void SelectParticipant(string label)
+        {
+            if (m_ParticipantField == null || string.IsNullOrEmpty(label) || !m_Participants.Contains(label)) return;
+            m_ParticipantField.SetValueWithoutNotify(label);
+        }
+
+        /// <summary>Which prepared-view files exist for the selected participant and part.</summary>
+        void RefreshViewsStatus()
+        {
+            if (!m_Initialised) return;
+            string participant = CurrentParticipant();
+            if (participant.Length == 0)
+            {
+                SetViewsStatus("No participants yet: run a WAM session, then press Import new logs");
+                return;
+            }
+
+            int part = SelectedPart();
+            List<string> files;
+            try
+            {
+                files = DatasetCatalog.Files() ?? new List<string>();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                SetViewsStatus("Could not read the dataset folder");
+                return;
+            }
+
+            string who = $"{PreparedViews.NormaliseParticipant(participant)} part {part.ToString(k_Inv)}";
+            List<string> missing = PreparedViews.MissingFiles(participant, part, files);
+            if (missing.Count == 0)
+                SetViewsStatus($"{who}: all views ready");
+            else if (missing.Count >= PreparedViews.All.Count)
+                SetViewsStatus($"{who} not imported yet: press Import new logs after the WAM session");
+            else
+                SetViewsStatus($"{who}: missing {string.Join(", ", missing)}");
+        }
+
+        void StartImport()
+        {
+            WamIaAutoImporter.Run(null); // results arrive through Completed (OnImportCompleted)
+            UpdateImportButton();
+        }
+
+        void UpdateImportButton()
+        {
+            bool running = WamIaAutoImporter.IsRunning;
+            m_ImportShownRunning = running;
+            if (m_ImportButton == null) return;
+            m_ImportButton.text = running ? "Importing…" : "Import new logs";
+            m_ImportButton.SetEnabled(!running);
+            m_ImportButton.tooltip = $"Converts new WAM logs from {WamIaAutoImporter.LogFolder}";
+        }
+
+        /// <summary>Toasts for what changed, then the participant, dataset and prepared-view lists.</summary>
+        void OnImportCompleted(WamIaImportResult result)
+        {
+            if (!m_Initialised || result == null) return;
+
+            // Pushed oldest-kind first so errors end up on top (newest on top).
+            foreach (WamIaConverted c in result.converted)
+                if (c != null) ShowToast("Imported " + WamIaAutoImporter.PartName(c.participant, c.part), ToastKind.Info);
+            foreach (WamIaReplaced r in result.replaced)
+                if (r != null) ShowToast(WamIaAutoImporter.ReplacedMessage(r), ToastKind.Warning);
+            foreach (string warning in result.warnings)
+                if (!string.IsNullOrEmpty(warning)) ShowToast(warning, ToastKind.Warning);
+            foreach (string error in result.errors)
+                if (!string.IsNullOrEmpty(error)) ShowToast(error, ToastKind.Error);
+
+            RefreshParticipants(result.participants);
+            if (result.HasChanges) RescanDatasets();
+            RefreshViewsStatus();
+            UpdateImportButton();
         }
 
         // ================================================================== request log
@@ -1390,6 +1575,91 @@ namespace DataViz.Study
                 else m_Flash = null;
             }
             if (m_StatusLine.text != text) m_StatusLine.text = text;
+        }
+
+        // ================================================================== toasts
+
+        /// <summary>
+        /// Shows a toast at the top of the dashboard: newest on top, at most 4 visible (older ones
+        /// wait), gone after 6 s (Info) / 12 s (Warning) / 20 s (Error) of being visible, or on click.
+        /// Also shown while the dashboard is minimised (below the tab).
+        /// </summary>
+        public void ShowToast(string text, ToastKind kind)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            if (m_ToastArea == null)
+            {
+                Flash(text); // older layout without a toast area
+                return;
+            }
+
+            string shown = text.Length > k_MaxToastChars ? text.Substring(0, k_MaxToastChars) + "…" : text;
+            var element = new VisualElement { pickingMode = PickingMode.Position, tooltip = "Click to dismiss" };
+            element.AddToClassList("dash-toast");
+            element.AddToClassList(ToastClass(kind));
+            var label = new Label(shown) { pickingMode = PickingMode.Ignore };
+            label.AddToClassList("dash-toast__text");
+            element.Add(label);
+
+            var toast = new Toast { Element = element, Remaining = ToastSeconds(kind) };
+            element.RegisterCallback<ClickEvent>(_ => DismissToast(toast));
+
+            m_Toasts.Insert(0, toast);
+            m_ToastArea.Insert(0, element);
+            while (m_Toasts.Count > k_MaxQueuedToasts)
+                DismissToast(m_Toasts[m_Toasts.Count - 1], relayout: false);
+            LayoutToasts();
+        }
+
+        static string ToastClass(ToastKind kind)
+        {
+            switch (kind)
+            {
+                case ToastKind.Warning: return "dash-toast--warning";
+                case ToastKind.Error: return "dash-toast--error";
+                default: return "dash-toast--info";
+            }
+        }
+
+        static float ToastSeconds(ToastKind kind)
+        {
+            switch (kind)
+            {
+                case ToastKind.Warning: return 12f;
+                case ToastKind.Error: return 20f;
+                default: return 6f;
+            }
+        }
+
+        void DismissToast(Toast toast, bool relayout = true)
+        {
+            if (toast == null || !m_Toasts.Remove(toast)) return;
+            toast.Element.RemoveFromHierarchy();
+            if (relayout) LayoutToasts();
+        }
+
+        void LayoutToasts()
+        {
+            for (int i = 0; i < m_Toasts.Count; i++)
+                m_Toasts[i].Element.style.display = i < k_MaxVisibleToasts ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        void UpdateToasts()
+        {
+            if (m_Toasts.Count == 0) return;
+            float dt = Time.unscaledDeltaTime;
+            List<Toast> expired = null;
+            int visible = Mathf.Min(m_Toasts.Count, k_MaxVisibleToasts);
+            for (int i = 0; i < visible; i++)
+            {
+                Toast toast = m_Toasts[i];
+                toast.Remaining -= dt;
+                if (toast.Remaining <= 0f) (expired ??= new List<Toast>()).Add(toast);
+            }
+            if (expired == null) return;
+            foreach (Toast toast in expired)
+                DismissToast(toast, relayout: false);
+            LayoutToasts();
         }
 
         // ================================================================== frame

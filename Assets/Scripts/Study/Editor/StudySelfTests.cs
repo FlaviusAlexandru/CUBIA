@@ -28,6 +28,7 @@ namespace DataViz.Study
             Guard(t, "StudyLogWriter", () => TestWriter(t));
             Guard(t, "PlotStateDiff", () => TestDiff(t));
             Guard(t, "PlotStateJson", () => TestJson(t));
+            Guard(t, "PreparedViews", () => TestPreparedViews(t));
 
             var sb = new StringBuilder();
             sb.Append("PASS ").Append(t.Pass).Append(" / FAIL ").Append(t.Failures.Count);
@@ -280,6 +281,93 @@ namespace DataViz.Study
             t.True("json playing", json.Contains("\"playing\":false"));
             t.True("json scrub", json.Contains("\"scrub\":0.46"));
             t.True("json point size", json.Contains("\"pointSize\":0.02"));
+        }
+
+        // ---- PreparedViews ----------------------------------------------------------------
+
+        static readonly string[] k_MovementColumns =
+        {
+            "Time", "Part", "Phase", "MoleOrder", "ControllerX", "ControllerY", "ControllerZ", "ControllerSpeed",
+            "LaserX", "LaserY", "LaserZ", "HeadX", "HeadY", "HeadZ", "HeadYaw", "HeadPitch",
+        };
+
+        static DatasetColumnar MakeDataset(string name, string[] columns)
+        {
+            var ds = new DatasetColumnar(name, 0, columns.Length);
+            for (int i = 0; i < columns.Length; i++)
+            {
+                ds.Columns.Add(new DatasetColumn(columns[i]));
+                ds.ColumnMapping[columns[i]] = i;
+            }
+            return ds;
+        }
+
+        static string I(int value) => value.ToString(CultureInfo.InvariantCulture);
+
+        static void TestPreparedViews(Tally t)
+        {
+            // FileFor: same participant normalisation as the session log file name.
+            t.Eq("views file 07", "P07_part1_movement.cdataset", PreparedViews.FileFor("07", 1, PreparedViews.KindMovement));
+            t.Eq("views file P07", "P07_part1_movement.cdataset", PreparedViews.FileFor("P07", 1, "movement"));
+            t.Eq("views file p07 part2", "P07_part2_moles.cdataset", PreparedViews.FileFor("p07", 2, "moles"));
+            t.Eq("views file trimmed", "P07_part1_combined.cdataset", PreparedViews.FileFor("  P07 ", 1, "combined"));
+            t.Eq("views file sanitised", "P0-7_x_part1_moles.cdataset", PreparedViews.FileFor(" 0/-7:_x ", 1, "moles"));
+            t.Eq("views participant", "P12", PreparedViews.NormaliseParticipant("12"));
+
+            // The list itself.
+            t.Eq("views count", "3", I(PreparedViews.All.Count));
+            if (PreparedViews.All.Count == 3)
+            {
+                t.Eq("views 1 kind", PreparedViews.KindMovement, PreparedViews.All[0].Kind);
+                t.Eq("views 2 kind", PreparedViews.KindCombined, PreparedViews.All[1].Kind);
+                t.Eq("views 3 kind", PreparedViews.KindMoles, PreparedViews.All[2].Kind);
+                t.Eq("views 1 title", "Controller path", PreparedViews.All[0].Title);
+            }
+            t.True("views find", PreparedViews.Find("controller-path") != null && PreparedViews.Find("nope") == null);
+
+            // TryResolve success on the movement columns.
+            DatasetColumnar movement = MakeDataset("P07_part1_movement.cdataset", k_MovementColumns);
+            PreparedView path = PreparedViews.All[0];
+            bool ok = PreparedViews.TryResolve(path, movement, out int x, out int y, out int z,
+                out int color, out int size, out int time, out int glyph, out string missing);
+            t.True("views resolve ok", ok);
+            t.Eq("views resolve missing empty", "", missing);
+            t.Eq("views resolve x", "4", I(x));
+            t.Eq("views resolve y", "5", I(y));
+            t.Eq("views resolve z", "6", I(z));
+            t.Eq("views resolve color", "7", I(color));
+            t.Eq("views resolve time", "0", I(time));
+            t.Eq("views resolve size none", "-1", I(size));
+            t.Eq("views resolve glyph none", "-1", I(glyph));
+
+            // Failure lists every missing name, in field order.
+            PreparedView accuracy = PreparedViews.All[2];
+            bool bad = PreparedViews.TryResolve(accuracy, movement, out _, out _, out _, out _, out _, out _, out _, out string missingNames);
+            t.True("views resolve fails", !bad);
+            t.Eq("views resolve missing names", "MoleX, MoleY, SpawnTime, HitOffset, ReactionTimeOrLifetime", missingNames);
+
+            // One column short: only that one is named, the others still resolve.
+            var partial = new List<string>(k_MovementColumns);
+            partial.Remove("ControllerSpeed");
+            bool short1 = PreparedViews.TryResolve(path, MakeDataset("short", partial.ToArray()),
+                out int px, out _, out _, out int pColor, out _, out _, out _, out string missingOne);
+            t.True("views resolve one missing fails", !short1);
+            t.Eq("views resolve one missing name", "ControllerSpeed", missingOne);
+            t.Eq("views resolve one missing x", "4", I(px));
+            t.Eq("views resolve one missing color", "-1", I(pColor));
+
+            // Combined view: glyph on RowType, no time column.
+            DatasetColumnar combined = MakeDataset("combined", new[]
+                { "RowType", "X", "Y", "Z", "Time", "MoleOrder", "MoleOrderLabel", "Label", "Phase", "Part" });
+            bool cOk = PreparedViews.TryResolve(PreparedViews.All[1], combined, out _, out _, out int cz,
+                out int cColor, out _, out int cTime, out int cGlyph, out _);
+            t.True("views combined ok", cOk);
+            t.Eq("views combined z=Time", "4", I(cz));
+            t.Eq("views combined color", "6", I(cColor));
+            t.Eq("views combined time none", "-1", I(cTime));
+            t.Eq("views combined glyph", "0", I(cGlyph));
+
+            t.True("views resolve null dataset", !PreparedViews.TryResolve(path, null, out _, out _, out _, out _, out _, out _, out _, out _));
         }
 
         // ---- plumbing ---------------------------------------------------------------------

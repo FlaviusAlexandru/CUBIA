@@ -21,6 +21,12 @@ namespace DataViz.Study
         public const string LogFolderApply = "session-folder-apply";  // Button ("Set")
         public const string SessionStatus = "session-status";         // Label (file name or error)
 
+        // Prepared views (built from the converter's {participant}_part{part}_{kind}.cdataset files)
+        public const string PreparedView1 = "view-1";              // Button (text = PreparedViews.All[0].Title)
+        public const string PreparedView2 = "view-2";              // Button (text = PreparedViews.All[1].Title)
+        public const string PreparedView3 = "view-3";              // Button (text = PreparedViews.All[2].Title)
+        public const string ViewsStatus = "views-status";          // Label (missing file / applied / rescan hint)
+
         // Dataset
         public const string DatasetDropdown = "dataset-list";      // DropdownField
         public const string DatasetRescan = "dataset-rescan";      // Button
@@ -48,6 +54,7 @@ namespace DataViz.Study
         // Time
         public const string TimeScrubSlider = "time-scrub";        // Slider 0..1
         public const string PlayPauseButton = "time-play";         // Button ("Play" / "Pause")
+        public const string PlaybackRateDropdown = "time-rate";    // DropdownField ("0.25×" … "2×", from PlaybackRateOptions)
 
         // View
         public const string TooltipsToggle = "view-tooltips";      // Toggle

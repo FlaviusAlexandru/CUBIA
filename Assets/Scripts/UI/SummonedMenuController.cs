@@ -103,6 +103,16 @@ namespace DataViz
             if (m_IsTransitioning)
                 return; // ignore repeated presses mid-transition rather than queuing/stacking them
 
+            // Pilot (WAM+IA, Nov 2026): the menu kept appearing with the controllers idle, seemingly
+            // on head movement. When controllers rest, the headset can switch to hand tracking, and
+            // the hand-interaction profiles also report a "grip pressed" (e.g. a relaxed fist coming
+            // into view). Only real controllers may summon the menu.
+            if (IsHandTrackingDevice(ctx.control?.device))
+            {
+                Debug.Log($"[SummonedMenuController] Ignored summon from hand-tracking device '{ctx.control.device.layout}' ({ctx.control.path}).");
+                return;
+            }
+
             // Grabbing/resizing the plot takes precedence over the menu.
             if (IsPressAimedAtGrabPriorityInteractable(ctx))
                 return;
@@ -148,6 +158,20 @@ namespace DataViz
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// True for hand-tracking devices (OpenXR hand interaction, Meta aim hand, XR Hands
+        /// devices, pinch/poke pose profiles), judged by the device layout and its base layouts.
+        /// </summary>
+        private static bool IsHandTrackingDevice(InputDevice device)
+        {
+            if (device == null)
+                return false;
+
+            string id = (device.layout + " " + device.name).ToLowerInvariant();
+            return id.Contains("handinteraction") || id.Contains("aimhand") || id.Contains("xrhanddevice") ||
+                   id.Contains("handtracking") || id.Contains("pinchpose") || id.Contains("pokepose");
         }
 
         private static InteractorHandedness HandednessOf(InputControl control)

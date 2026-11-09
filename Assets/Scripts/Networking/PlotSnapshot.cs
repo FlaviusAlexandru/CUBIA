@@ -45,6 +45,10 @@ namespace DataViz.Networking
 
         public bool IsPlaying;
         public float PlaybackSpeed;
+        public float PlaybackRate = 1f;
+        // The host's effective scrub units per second (manager.EffectiveScrubPerSecond), used by ScrubAt;
+        // 0 in a snapshot not taken by Capture, which then falls back to PlaybackSpeed x PlaybackRate.
+        public float ScrubPerSecond;
         public float TimeScrub;
         public double ScrubServerTime;
 
@@ -73,6 +77,8 @@ namespace DataViz.Networking
             RangeMaxs = m.GlyphRanges.Select(r => r.max).ToArray(),
             IsPlaying = m.IsPlaying,
             PlaybackSpeed = m.PlaybackSpeed,
+            PlaybackRate = m.PlaybackRate,
+            ScrubPerSecond = m.EffectiveScrubPerSecond(),
             TimeScrub = m.TimeScrub,
         };
 
@@ -107,6 +113,7 @@ namespace DataViz.Networking
 
             m.IsPlaying = IsPlaying;
             m.PlaybackSpeed = PlaybackSpeed;
+            m.PlaybackRate = PlaybackRate;
             m.TimeScrub = Mathf.Clamp01(timeScrub);
         }
 
@@ -115,8 +122,11 @@ namespace DataViz.Networking
         {
             if (!IsPlaying || TimeColumn < 0)
                 return TimeScrub;
-            return Mathf.Min(1f, TimeScrub + PlaybackSpeed * (float)(serverTime - ScrubServerTime));
+            return Mathf.Min(1f, TimeScrub + EffectiveScrubPerSecond * (float)(serverTime - ScrubServerTime));
         }
+
+        /// <summary>Scrub units per second during playback (ScrubPerSecond, or PlaybackSpeed x PlaybackRate without it).</summary>
+        public float EffectiveScrubPerSecond => ScrubPerSecond > 0f ? ScrubPerSecond : PlaybackSpeed * PlaybackRate;
 
         /// <summary>Equal in everything except the time scrub and when it was taken.</summary>
         public bool SamePlotAs(PlotSnapshot o) =>
@@ -131,7 +141,8 @@ namespace DataViz.Networking
             GlyphColumn == o.GlyphColumn &&
             GlyphLabels.SequenceEqual(o.GlyphLabels) && GlyphIndices.SequenceEqual(o.GlyphIndices) &&
             RangeGlyphs.SequenceEqual(o.RangeGlyphs) && RangeMins.SequenceEqual(o.RangeMins) && RangeMaxs.SequenceEqual(o.RangeMaxs) &&
-            IsPlaying == o.IsPlaying && PlaybackSpeed == o.PlaybackSpeed;
+            IsPlaying == o.IsPlaying && PlaybackSpeed == o.PlaybackSpeed &&
+            PlaybackRate == o.PlaybackRate && ScrubPerSecond == o.ScrubPerSecond;
 
         public bool Equals(PlotSnapshot o) =>
             SamePlotAs(o) && TimeScrub == o.TimeScrub && ScrubServerTime == o.ScrubServerTime;
@@ -165,6 +176,8 @@ namespace DataViz.Networking
             Wire.Array(s, ref RangeMaxs);
             s.SerializeValue(ref IsPlaying);
             s.SerializeValue(ref PlaybackSpeed);
+            s.SerializeValue(ref PlaybackRate);
+            s.SerializeValue(ref ScrubPerSecond);
             s.SerializeValue(ref TimeScrub);
             s.SerializeValue(ref ScrubServerTime);
         }
@@ -188,6 +201,7 @@ namespace DataViz.Networking
         GlyphColumn, GlyphAssignment, GlyphRanges,
         Shuffle, ShuffleBackward, ShuffleForward,
         FilterRanges,
+        PlaybackRate, // appended: existing op values stay unchanged
     }
 
     /// <summary>

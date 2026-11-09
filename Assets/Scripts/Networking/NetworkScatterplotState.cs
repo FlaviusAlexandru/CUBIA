@@ -20,8 +20,10 @@ namespace DataViz.Networking
         public static NetworkScatterplotState Instance { get; private set; }
 
         // During playback the host's scrub drifts slightly from the published extrapolation;
-        // republish only when it is off by more than this (scrub units, 0.01 = 40 ms at default speed).
+        // republish only when it is off by more than this (scrub units, 0.01 = 40 ms at default speed)
+        // or by more than k_PlaybackDriftSeconds of playback, whichever is smaller (slow real-time playback).
         const float k_PlaybackDriftTolerance = 0.01f;
+        const float k_PlaybackDriftSeconds = 0.04f;
 
         readonly NetworkVariable<PlotSnapshot> m_Plot = new(new PlotSnapshot());
         readonly NetworkVariable<bool> m_PresenterMode = new();
@@ -158,8 +160,9 @@ namespace DataViz.Networking
             PlotSnapshot current = m_Plot.Value;
             if (current.SamePlotAs(next))
             {
+                float tolerance = Mathf.Clamp(next.EffectiveScrubPerSecond * k_PlaybackDriftSeconds, 1e-5f, k_PlaybackDriftTolerance);
                 bool sameTime = next.IsPlaying
-                    ? Mathf.Abs(current.ScrubAt(now) - next.TimeScrub) < k_PlaybackDriftTolerance
+                    ? Mathf.Abs(current.ScrubAt(now) - next.TimeScrub) < tolerance
                     : current.TimeScrub == next.TimeScrub;
                 if (sameTime)
                     return;
@@ -216,6 +219,7 @@ namespace DataViz.Networking
                 case PlotOp.ShuffleBackward: m.RequestShuffleBackwardRpc(); break;
                 case PlotOp.ShuffleForward: m.RequestShuffleForwardRpc(); break;
                 case PlotOp.FilterRanges: m.RequestSetFilterRangesRpc(r.FilterRanges); break;
+                case PlotOp.PlaybackRate: m.RequestPlaybackRateRpc(r.Float); break;
             }
         }
 

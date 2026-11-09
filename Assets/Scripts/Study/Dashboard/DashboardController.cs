@@ -46,6 +46,9 @@ namespace DataViz.Study
         DropdownField m_PartField;
         Button m_SessionButton, m_LogFolderApply;
         Label m_SessionTime, m_SessionStatus;
+        // Prepared views (index i = PreparedViews.All[i])
+        readonly Button[] m_ViewButtons = new Button[3];
+        Label m_ViewsStatus;
         // Dataset
         DropdownField m_DatasetDropdown;
         Button m_DatasetRescan, m_DatasetLoad;
@@ -60,6 +63,7 @@ namespace DataViz.Study
         // Time
         Slider m_TimeScrub;
         Button m_PlayPause;
+        DropdownField m_PlaybackRate;
         // View
         Toggle m_Tooltips;
         Button m_ResetPosition, m_Undo;
@@ -166,6 +170,11 @@ namespace DataViz.Study
             m_LogFolderApply = Find<Button>(r, DashboardIds.LogFolderApply);
             m_SessionStatus = Find<Label>(r, DashboardIds.SessionStatus);
 
+            m_ViewButtons[0] = Find<Button>(r, DashboardIds.PreparedView1);
+            m_ViewButtons[1] = Find<Button>(r, DashboardIds.PreparedView2);
+            m_ViewButtons[2] = Find<Button>(r, DashboardIds.PreparedView3);
+            m_ViewsStatus = Find<Label>(r, DashboardIds.ViewsStatus);
+
             m_DatasetDropdown = Find<DropdownField>(r, DashboardIds.DatasetDropdown);
             m_DatasetRescan = Find<Button>(r, DashboardIds.DatasetRescan);
             m_DatasetLoad = Find<Button>(r, DashboardIds.DatasetLoad);
@@ -188,6 +197,7 @@ namespace DataViz.Study
 
             m_TimeScrub = Find<Slider>(r, DashboardIds.TimeScrubSlider);
             m_PlayPause = Find<Button>(r, DashboardIds.PlayPauseButton);
+            m_PlaybackRate = Find<DropdownField>(r, DashboardIds.PlaybackRateDropdown);
 
             m_Tooltips = Find<Toggle>(r, DashboardIds.TooltipsToggle);
             m_ResetPosition = Find<Button>(r, DashboardIds.ResetPositionButton);
@@ -236,6 +246,24 @@ namespace DataViz.Study
                 m_TimeScrub.lowValue = 0f;
                 m_TimeScrub.highValue = 1f;
             }
+            for (int i = 0; i < m_ViewButtons.Length; i++)
+            {
+                if (m_ViewButtons[i] == null) continue;
+                if (i < PreparedViews.All.Count)
+                {
+                    m_ViewButtons[i].text = PreparedViews.All[i].Title;
+                    m_ViewButtons[i].tooltip = $"Loads {{participant}}_part{{part}}_{PreparedViews.All[i].Kind}{PreparedViews.Extension}";
+                }
+                else
+                {
+                    m_ViewButtons[i].style.display = DisplayStyle.None;
+                }
+            }
+            if (m_PlaybackRate != null)
+            {
+                m_PlaybackRate.choices = MultiplayerScatterplotManager.PlaybackRateOptions.Select(r => FormatRate(r)).ToList();
+                m_PlaybackRate.SetValueWithoutNotify(FormatRate(1f));
+            }
             if (m_RequestText != null)
             {
                 m_RequestText.multiline = false;
@@ -249,6 +277,12 @@ namespace DataViz.Study
 
             OnClick(m_SessionButton, ToggleSession);
             OnClick(m_LogFolderApply, ApplyLogFolder);
+
+            for (int i = 0; i < m_ViewButtons.Length && i < PreparedViews.All.Count; i++)
+            {
+                PreparedView view = PreparedViews.All[i];
+                OnClick(m_ViewButtons[i], () => ApplyPreparedView(view));
+            }
 
             OnClick(m_DatasetRescan, RescanDatasets);
             OnClick(m_DatasetLoad, LoadSelectedDataset);
@@ -272,6 +306,7 @@ namespace DataViz.Study
 
             RegisterSlider(m_TimeScrub, m_ScrubDrag, OnScrubDragged);
             OnClick(m_PlayPause, TogglePlayback);
+            OnChoice(m_PlaybackRate, OnPlaybackRateChanged);
 
             m_Tooltips?.RegisterValueChangedCallback(evt =>
             {
@@ -490,6 +525,11 @@ namespace DataViz.Study
                 {
                     m_PlayPause.text = m.IsPlaying ? "Pause" : "Play";
                     m_PlayPause.SetEnabled(hasTime);
+                }
+                if (m_PlaybackRate != null)
+                {
+                    SetIndex(m_PlaybackRate, NearestRateIndex(m.PlaybackRate));
+                    m_PlaybackRate.SetEnabled(hasTime);
                 }
 
                 m_Tooltips?.SetValueWithoutNotify(m.ShowTooltips);
@@ -781,6 +821,37 @@ namespace DataViz.Study
                 () => m_Manager.RequestPlaybackToggleRpc(play));
         }
 
+        void OnPlaybackRateChanged(int index)
+        {
+            float[] options = MultiplayerScatterplotManager.PlaybackRateOptions;
+            if (index < 0 || index >= options.Length) return;
+            float rate = options[index];
+            if (Mathf.Approximately(rate, m_Manager.PlaybackRate)) return;
+            Facilitate(StudyActions.SetPlaybackRate, FormatRateValue(m_Manager.PlaybackRate), FormatRateValue(rate),
+                () => m_Manager.RequestPlaybackRateRpc(rate));
+        }
+
+        /// <summary>Index of the option closest to <paramref name="rate"/> (a rate set elsewhere still shows something).</summary>
+        static int NearestRateIndex(float rate)
+        {
+            float[] options = MultiplayerScatterplotManager.PlaybackRateOptions;
+            int best = -1;
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i < options.Length; i++)
+            {
+                float distance = Mathf.Abs(options[i] - rate);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = i;
+                }
+            }
+            return best;
+        }
+
+        static string FormatRateValue(float rate) => rate.ToString("0.##", k_Inv);
+        static string FormatRate(float rate) => FormatRateValue(rate) + "×";
+
         void SetTooltips(bool show)
         {
             if (m_Manager == null) return;
@@ -899,6 +970,122 @@ namespace DataViz.Study
             if (string.IsNullOrEmpty(file)) return;
             Facilitate(StudyActions.LoadDataset, m_Manager.CurrentDatasetName ?? "", file,
                 () => m_Manager.RequestLoadDatasetRpc(file));
+        }
+
+        // ---------------------------------------------------------------- prepared views
+
+        /// <summary>
+        /// Loads {participant}_part{part}_{kind}.cdataset (participant and part from the Session
+        /// fields, logging or not) and sets every mapping of the view in one facilitator change:
+        /// one undo snapshot, one ApplyView row.
+        /// </summary>
+        void ApplyPreparedView(PreparedView view)
+        {
+            if (m_Manager == null || view == null) return;
+
+            string participant = m_ParticipantField != null ? (m_ParticipantField.value ?? "").Trim() : "";
+            if (participant.Length == 0 && m_Logger != null && m_Logger.IsLogging)
+                participant = m_Logger.ParticipantId ?? "";
+            if (participant.Length == 0)
+            {
+                SetViewsStatus("Enter a participant ID in Session first");
+                return;
+            }
+            int part = 1;
+            if (m_PartField != null && !int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out part))
+                part = 1;
+
+            string wanted = PreparedViews.FileFor(participant, part, view.Kind);
+            string who = $"{PreparedViews.NormaliseParticipant(participant)} part {part.ToString(k_Inv)}";
+
+            List<string> files;
+            try
+            {
+                files = DatasetCatalog.Files() ?? new List<string>(); // fresh: the converter may have just run
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                SetViewsStatus("Could not read the dataset folder");
+                return;
+            }
+            string file = files.FirstOrDefault(f => string.Equals(f, wanted, StringComparison.OrdinalIgnoreCase));
+            string rescanHint = files.SequenceEqual(m_Datasets) ? "" : " · dataset list is out of date: press Rescan";
+            if (file == null)
+            {
+                SetViewsStatus($"Run the converter for {who} first (missing {wanted}){rescanHint}");
+                return;
+            }
+
+            // Same dataset already loaded: check the columns before writing a row or an undo snapshot.
+            bool reload = !string.Equals(m_Manager.CurrentDatasetName ?? "", file, StringComparison.Ordinal) ||
+                          m_Manager.LoadedDataset == null;
+            if (!reload && !PreparedViews.TryResolve(view, m_Manager.LoadedDataset,
+                    out _, out _, out _, out _, out _, out _, out _, out string missingNow))
+            {
+                SetViewsStatus($"{file} has no column {missingNow}: re-run the converter");
+                return;
+            }
+
+            string error = null;
+            string oldValue = m_Manager.CurrentDatasetName ?? "";
+            Facilitate(StudyActions.ApplyView, oldValue, view.Title, () =>
+            {
+                MultiplayerScatterplotManager m = m_Manager;
+                if (reload)
+                {
+                    m.RequestLoadDatasetRpc(file); // synchronous on the host: LoadedDataset is set afterwards
+                    if (m.LoadedDataset == null || !string.Equals(m.CurrentDatasetName ?? "", file, StringComparison.Ordinal))
+                    {
+                        error = $"Could not load {file} (see Console)";
+                        return;
+                    }
+                }
+
+                if (!PreparedViews.TryResolve(view, m.LoadedDataset, out int x, out int y, out int z,
+                        out int color, out int size, out int time, out int glyph, out string missing))
+                {
+                    error = $"{file} has no column {missing}: re-run the converter";
+                    return;
+                }
+
+                if (m.Filters.Count > 0) m.RequestClearFiltersRpc(); // a view shows every row
+                if (x >= 0) m.RequestXColumnRpc(x);
+                if (y >= 0) m.RequestYColumnRpc(y);
+                if (z >= 0) m.RequestZColumnRpc(z);
+                m.RequestColorColumnRpc(color);
+                if (size >= 0)
+                {
+                    m.RequestSizeColumnRpc(size);
+                    m.RequestSizeMappedRpc(true);
+                }
+                else
+                {
+                    m.RequestSizeMappedRpc(false);
+                }
+                m.RequestTimeColumnRpc(time); // also stops playback
+                m.RequestGlyphColumnRpc(glyph);
+                if (glyph >= 0 && view.GlyphShapes != null)
+                    foreach ((string label, int shape) in view.GlyphShapes)
+                        m.RequestGlyphAssignmentRpc(label, shape);
+                if (m.IsPlaying) m.RequestPlaybackToggleRpc(false);
+                m.RequestTimeScrubRpc(0f);
+            });
+
+            if (error != null)
+            {
+                SetViewsStatus(error);
+                Flash($"{view.Title}: {error}");
+            }
+            else
+            {
+                SetViewsStatus($"{view.Title} · {file}{rescanHint}");
+            }
+        }
+
+        void SetViewsStatus(string text)
+        {
+            if (m_ViewsStatus != null) m_ViewsStatus.text = text;
         }
 
         // ---------------------------------------------------------------- undo
@@ -1172,6 +1359,7 @@ namespace DataViz.Study
             if (!a.FilterRangeCounts.SequenceEqual(b.FilterRangeCounts) || !a.FilterRangeMins.SequenceEqual(b.FilterRangeMins) ||
                 !a.FilterRangeMaxs.SequenceEqual(b.FilterRangeMaxs))
                 return StudyActions.SetFilterRanges;
+            if (a.PlaybackRate != b.PlaybackRate) return StudyActions.SetPlaybackRate;
             if (a.IsPlaying != b.IsPlaying)
                 return !b.IsPlaying && b.TimeScrub >= 1f ? null : (b.IsPlaying ? StudyActions.Play : StudyActions.Pause); // playback reaching the end is not a change
             if (a.TimeScrub != b.TimeScrub && !b.IsPlaying) return StudyActions.Scrub;

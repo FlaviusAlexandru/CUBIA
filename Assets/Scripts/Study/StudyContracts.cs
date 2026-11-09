@@ -71,10 +71,12 @@ namespace DataViz.Study
         public const string Scrub = "Scrub";
         public const string Play = "Play";
         public const string Pause = "Pause";
+        public const string SetPlaybackRate = "SetPlaybackRate"; // OldValue/NewValue = rate, e.g. "1" -> "0.5"
         public const string Tooltips = "Tooltips";
         public const string ResetPosition = "ResetPosition";
         public const string Shuffle = "Shuffle";
         public const string LoadDataset = "LoadDataset";
+        public const string ApplyView = "ApplyView";       // prepared view; NewValue = view title
         public const string Undo = "Undo";
         public const string Note = "Note";
         public const string Marker = "Marker";

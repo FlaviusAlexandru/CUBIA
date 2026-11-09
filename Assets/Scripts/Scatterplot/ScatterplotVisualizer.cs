@@ -23,6 +23,23 @@ namespace DataViz
         [Range(0f, 1f)]
         public float m_FilteredOutAlpha = 0.08f;
 
+        [Header("Time Animation Settings")]
+        [Tooltip("Alpha of points outside the current time window while a time column is set. They stay " +
+                 "drawn as faint context (pilot finding P4) but are not hoverable. A row also dimmed by a " +
+                 "value filter takes the lower of the two alphas.")]
+        [Range(0f, 1f)]
+        public float m_TimeOutsideAlpha = 0.18f;
+
+        [Tooltip("Continuous time columns only: length of the full-opacity trail behind the current time, " +
+                 "as a fraction of the time column's range.")]
+        [Range(0f, 1f)]
+        public float m_TimeTrailFraction = 0.02f;
+
+        // A time column whose values are all whole numbers spanning at most this many steps animates
+        // step by step (the original behaviour); anything else uses the trailing window.
+        private const float k_MaxDiscreteTimeSteps = 1000f;
+        private const float k_WholeNumberEpsilon = 1e-3f;
+
         [Header("Axis Label Settings")]
         [Tooltip("Font size of the axis name + range labels (was 3).")]
         public float m_AxisLabelFontSize = 7f;
@@ -154,10 +171,9 @@ namespace DataViz
             List<Vector3> positions = new List<Vector3>(dataset.RowCount);
             List<Color> colors = new List<Color>(dataset.RowCount);
 
-            // Tracks, for each entry in positions/colors, which original
-            // dataset row it came from. Needed because time-filtering means
-            // positions[i] is NO LONGER guaranteed to be dataset.Rows[i] -
-            // GPUPointInteractable relies on this mapping for tooltips.
+            // Tracks, for each entry in positions/colors, which original dataset row it came from.
+            // Every row is in the buffer today, but GPUPointInteractable relies on this mapping for
+            // tooltips, so keep it explicit.
             List<int> visibleRowIndices = new List<int>(dataset.RowCount);
             List<int> glyphIndices = new List<int>(dataset.RowCount);
 
@@ -168,21 +184,41 @@ namespace DataViz
             DatasetColumn colorColumn = (colorCol >= 0 && colorCol < dataset.ColumnCount) ? dataset.Columns[colorCol] : null;
             DatasetColumn timeColumn = (timeCol >= 0 && timeCol < dataset.ColumnCount) ? dataset.Columns[timeCol] : null;
 
-            // Time filtering: TimeScrub (0-1) maps across the column's actual
-            // min/max range. We snap to the nearest whole step rather than
-            // requiring an exact float match, since real time values will
-            // rarely land exactly on the interpolated target - and discrete
-            // datasets like moving_clusters.csv use whole-number steps anyway.
+            // Time window: TimeScrub (0-1) maps across the column's min/max range. Rows outside the
+            // current window stay in the buffer at m_TimeOutsideAlpha (pilot finding P4) instead of
+            // being skipped. Discrete columns (whole numbers, few steps, e.g. moving_clusters.csv)
+            // snap to the nearest whole step as before; continuous ones (e.g. seconds at 125 Hz) show
+            // a trailing window [t - W, t], held at [min, min + W] until t gets there.
             bool timeFilterActive = timeColumn != null && timeColumn.IsNumeric;
+            bool timeDiscrete = false;
             int currentTimeStep = 0;
+            float timeWindowLo = 0f;
+            float timeWindowHi = 0f;
+
+            m_TimeWindowMask.Clear();
+            m_HoverPositions.Clear();
+            m_HoverColors.Clear();
+            m_HoverRowIndices.Clear();
 
             if (timeFilterActive)
             {
-                float targetValue = Mathf.Lerp(timeColumn.MinValue, timeColumn.MaxValue, m_Manager.TimeScrub);
-                currentTimeStep = Mathf.RoundToInt(targetValue);
+                float tMin = timeColumn.MinValue;
+                float tMax = timeColumn.MaxValue;
+                float targetValue = Mathf.Lerp(tMin, tMax, m_Manager.TimeScrub);
+                timeDiscrete = IsDiscreteTimeColumn(dataset, timeCol, timeColumn);
+                if (timeDiscrete)
+                {
+                    currentTimeStep = Mathf.RoundToInt(targetValue);
+                }
+                else
+                {
+                    float trail = Mathf.Max(0f, m_TimeTrailFraction) * (tMax - tMin);
+                    timeWindowHi = Mathf.Max(targetValue, tMin + trail);
+                    timeWindowLo = timeWindowHi - trail;
+                }
             }
 
-            // Value filtering (m_Manager.Filters): unlike the time filter above, non-matching
+            // Value filtering (m_Manager.Filters): like the time window above, non-matching
             // rows are NOT skipped - they stay in the buffer at a dimmed alpha so they visually
             // fade away instead of disappearing. This keeps row counts/indices stable for
             // GPUPointInteractable and avoids the plot "jumping" as points vanish.
@@ -234,14 +270,21 @@ namespace DataViz
 
             for (int i = 0; i < dataset.RowCount; i++)
             {
-                // 0. Time filter - skip this row entirely if it doesn't
-                // belong to the currently-selected time step.
+                // 0. Time window: is this row part of what is animating now? (A row with no time
+                // value never is.)
+                bool inTimeWindow = true;
                 if (timeFilterActive)
                 {
-                    float rawTimeValue = dataset.GetNumericValue(i, timeCol);
-                    if (Mathf.RoundToInt(rawTimeValue) != currentTimeStep)
+                    if (!dataset.HasValue(i, timeCol))
                     {
-                        continue;
+                        inTimeWindow = false;
+                    }
+                    else
+                    {
+                        float rawTimeValue = dataset.GetNumericValue(i, timeCol);
+                        inTimeWindow = timeDiscrete
+                            ? Mathf.RoundToInt(rawTimeValue) == currentTimeStep
+                            : rawTimeValue >= timeWindowLo && rawTimeValue <= timeWindowHi;
                     }
                 }
 
@@ -287,6 +330,12 @@ namespace DataViz
                     pointColor.a = matches ? 1f : m_FilteredOutAlpha;
                 }
 
+                // 3. (time) Fade rather than hide rows outside the time window; the lower alpha wins.
+                if (!inTimeWindow)
+                {
+                    pointColor.a = Mathf.Min(pointColor.a, m_TimeOutsideAlpha);
+                }
+
                 // 3a. Glyph range preview: hide points inside an overlap of the draft ranges.
                 if (glyphPreviewHideActive && dataset.HasValue(i, glyphCol)
                     && IsInGlyphPreviewHiddenInterval(dataset.GetNumericValue(i, glyphCol)))
@@ -310,9 +359,18 @@ namespace DataViz
 
                 colors.Add(pointColor);
                 visibleRowIndices.Add(i);
+
+                if (timeFilterActive)
+                {
+                    m_TimeWindowMask.Add(inTimeWindow);
+                    if (inTimeWindow)
+                    {
+                        m_HoverPositions.Add(worldPos);
+                        m_HoverColors.Add(pointColor);
+                        m_HoverRowIndices.Add(i);
+                    }
+                }
             }
-
-
 
             m_GPUPoints.BuildAdvanced(
                 positions,
@@ -328,17 +386,17 @@ namespace DataViz
             LastBuiltGlyphIndices = glyphIndices;
             LastBuiltRowIndices = visibleRowIndices;
             LastBuiltColors = colors;
+            LastBuiltInTimeWindow = timeFilterActive ? m_TimeWindowMask : null;
 
-            // Also update the interactable with point data
-
+            // Also update the interactable with point data. While a time column is set it only gets
+            // the rows inside the time window, so the faded context rows can't be hovered/tooltipped
+            // (as before, when they were not drawn at all).
             if (m_GPUInteractable != null)
             {
-                m_GPUInteractable.SetPointData(
-                    positions,
-                    colors,
-                    pointSize,
-                    visibleRowIndices
-                );
+                if (timeFilterActive)
+                    m_GPUInteractable.SetPointData(m_HoverPositions, m_HoverColors, pointSize, m_HoverRowIndices);
+                else
+                    m_GPUInteractable.SetPointData(positions, colors, pointSize, visibleRowIndices);
             }
 
             //TEMPORARILY COMMENTED OUT WHILE I TRY OUT GPU INSTANCING
@@ -920,6 +978,67 @@ namespace DataViz
         public List<int> LastBuiltGlyphIndices { get; private set; }
         public List<int> LastBuiltRowIndices { get; private set; }
         public List<Color> LastBuiltColors { get; private set; }
+
+        /// <summary>
+        /// Parallel to LastBuiltRowIndices: true when that point is inside the current time window
+        /// (drawn at full alpha, hoverable), false when it is faded context. Null when no time
+        /// column is set (every point counts as inside). Reused, so valid until the next RegeneratePlot.
+        /// </summary>
+        public List<bool> LastBuiltInTimeWindow { get; private set; }
+
+        /// <summary>True when the point at bufferIndex (LastBuiltRowIndices order) is inside the current time window.</summary>
+        public bool IsPointInTimeWindow(int bufferIndex)
+        {
+            List<bool> mask = LastBuiltInTimeWindow;
+            if (mask == null)
+                return true;
+            return bufferIndex >= 0 && bufferIndex < mask.Count && mask[bufferIndex];
+        }
+
+        // Reused every regenerate (it runs every frame during playback): time-window mask and the
+        // in-window subset handed to GPUPointInteractable.
+        private readonly List<bool> m_TimeWindowMask = new();
+        private readonly List<Vector3> m_HoverPositions = new();
+        private readonly List<Color> m_HoverColors = new();
+        private readonly List<int> m_HoverRowIndices = new();
+
+        // Discrete/continuous verdict for the time column, cached per dataset instance + column.
+        private DatasetColumnar m_TimeKindDataset;
+        private int m_TimeKindColumn = -1;
+        private bool m_TimeKindDiscrete;
+
+        /// <summary>
+        /// True when the time column animates step by step: every value is a whole number and the
+        /// range spans at most k_MaxDiscreteTimeSteps steps. Scans the column once per dataset/column.
+        /// </summary>
+        private bool IsDiscreteTimeColumn(DatasetColumnar dataset, int timeCol, DatasetColumn timeColumn)
+        {
+            if (ReferenceEquals(dataset, m_TimeKindDataset) && timeCol == m_TimeKindColumn)
+                return m_TimeKindDiscrete;
+
+            m_TimeKindDataset = dataset;
+            m_TimeKindColumn = timeCol;
+            m_TimeKindDiscrete = ScanIsDiscrete(dataset, timeCol, timeColumn);
+            return m_TimeKindDiscrete;
+        }
+
+        private static bool ScanIsDiscrete(DatasetColumnar dataset, int timeCol, DatasetColumn timeColumn)
+        {
+            float range = timeColumn.MaxValue - timeColumn.MinValue;
+            if (!(range >= 0f) || range > k_MaxDiscreteTimeSteps) // also rejects NaN
+                return false;
+
+            for (int i = 0; i < dataset.RowCount; i++)
+            {
+                if (!dataset.HasValue(i, timeCol))
+                    continue;
+                float v = dataset.GetNumericValue(i, timeCol);
+                if (Mathf.Abs(v - Mathf.Round(v)) > k_WholeNumberEpsilon)
+                    return false;
+            }
+
+            return true;
+        }
 
         /// <summary>
         /// Glyph for dataset row rowIndex on the glyph column: per-value assignment, else the

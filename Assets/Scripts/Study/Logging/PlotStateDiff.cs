@@ -34,7 +34,8 @@ namespace DataViz.Study
                    a.GlyphColumn != b.GlyphColumn ||
                    !Same(a.GlyphLabels, b.GlyphLabels) || !Same(a.GlyphIndices, b.GlyphIndices) ||
                    !Same(a.RangeGlyphs, b.RangeGlyphs) || !Same(a.RangeMins, b.RangeMins) || !Same(a.RangeMaxs, b.RangeMaxs) ||
-                   a.IsPlaying != b.IsPlaying;
+                   a.IsPlaying != b.IsPlaying ||
+                   Math.Abs(a.PlaybackRate - b.PlaybackRate) > 1e-4f;
         }
 
         /// <summary>One entry per named change; empty when nothing relevant changed.</summary>
@@ -68,6 +69,10 @@ namespace DataViz.Study
 
             DescribeGlyphs(result, before, after, dataset);
             DescribeFilters(result, before, after, dataset);
+
+            if (Math.Abs(before.PlaybackRate - after.PlaybackRate) > 1e-4f)
+                result.Add((StudyActions.SetPlaybackRate,
+                    before.PlaybackRate.ToString("0.##", k_Inv), after.PlaybackRate.ToString("0.##", k_Inv)));
 
             if (before.IsPlaying != after.IsPlaying)
                 result.Add(after.IsPlaying ? (StudyActions.Play, "", "") : (StudyActions.Pause, "", ""));

@@ -28,7 +28,23 @@ namespace DataViz
         [Range(0f, 1f)]
         public float TimeScrub = 0f;
         public bool IsPlaying = false;
-        public float PlaybackSpeed = 0.25f; // scrub units (0-1) per second
+        public float PlaybackSpeed = 0.25f; // scrub units (0-1) per second; 1x for time columns that aren't seconds-like
+
+        /// <summary>
+        /// User-facing playback rate multiplier (shared). 1x is real time for seconds-like time
+        /// columns, otherwise PlaybackSpeed; see EffectiveScrubPerSecond.
+        /// </summary>
+        public float PlaybackRate = 1f;
+
+        /// <summary>The rates offered in the UI (pilot finding P3).</summary>
+        public static readonly float[] PlaybackRateOptions = { 0.25f, 0.5f, 1f, 1.5f, 2f };
+
+        public const float MinPlaybackRate = 0.1f;
+        public const float MaxPlaybackRate = 4f;
+
+        // Real-time 1x only up to this time range; a longer recording (e.g. days of DateTime data)
+        // would barely move, so it falls back to PlaybackSpeed.
+        private const float k_MaxRealTimeRangeSeconds = 3600f;
 
         [Header("Interaction Settings")]
         public bool ShowTooltips = false;
@@ -836,6 +852,57 @@ namespace DataViz
             OnPlotSettingsChanged?.Invoke();
         }
 
+        /// <summary>Sets PlaybackRate, clamped to [MinPlaybackRate, MaxPlaybackRate]. Shared; the scrub position is kept.</summary>
+        public void RequestPlaybackRateRpc(float rate)
+        {
+            if (ForwardToHost(PlotOp.PlaybackRate, floatArg: rate)) return;
+
+            if (!float.IsFinite(rate))
+                return;
+
+            PlaybackRate = Mathf.Clamp(rate, MinPlaybackRate, MaxPlaybackRate);
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Scrub units (0-1) per second that playback advances: the 1x base times PlaybackRate.
+        /// 1x is real time (1 / time range in seconds) when the time column is seconds-like (DateTime,
+        /// stored as seconds, or a numeric column named "...time..."), otherwise PlaybackSpeed.
+        /// </summary>
+        public float EffectiveScrubPerSecond()
+        {
+            float baseSpeed = PlaybackSpeed;
+            DatasetColumn column = LoadedDataset?.GetColumn(TimeColumnIndex);
+            if (column != null && column.IsNumeric && IsSecondsLikeTimeColumn(column))
+            {
+                float range = column.MaxValue - column.MinValue;
+                if (range > 0f && range <= k_MaxRealTimeRangeSeconds)
+                    baseSpeed = 1f / range;
+            }
+
+            return baseSpeed * PlaybackRate;
+        }
+
+        // DateTime columns are stored as seconds (preprocess_csv_columnar.py). A numeric column counts
+        // when its name contains "time", unless the name says milliseconds.
+        private static bool IsSecondsLikeTimeColumn(DatasetColumn column)
+        {
+            if (column.Type == DataValueType.DateTime)
+                return true;
+
+            string name = column.Name;
+            if (string.IsNullOrEmpty(name) || name.IndexOf("time", StringComparison.OrdinalIgnoreCase) < 0)
+                return false;
+
+            bool milliseconds =
+                name.IndexOf("milli", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("msec", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("(ms)", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("[ms]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.EndsWith("ms", StringComparison.OrdinalIgnoreCase);
+            return !milliseconds;
+        }
+
         public void RequestTooltipsToggleRpc(bool showTooltips)
         {
             ShowTooltips = showTooltips;
@@ -1594,7 +1661,7 @@ namespace DataViz
             if (!IsPlaying || TimeColumnIndex < 0)
                 return;
 
-            TimeScrub += PlaybackSpeed * Time.deltaTime;
+            TimeScrub += EffectiveScrubPerSecond() * Time.deltaTime;
 
             if (TimeScrub >= 1f)
             {

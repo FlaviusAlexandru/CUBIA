@@ -97,9 +97,16 @@ class ColumnarDatasetProcessor:
         """Infer if a column is numeric, datetime, or categorical, return type and confidence"""
         # Try to convert to numeric (accepts decimal commas for non-comma delimiters)
         numeric_series = self.to_numeric_flexible(series)
-        numeric_ratio = numeric_series.notna().sum() / len(series)
         
-        # If 90% or more are numeric, treat as numeric
+        # Ratios are taken over the non-empty cells, so a sparse column (e.g. a
+        # reaction time that is empty for every missed target) keeps its type;
+        # the empty cells are marked missing in the validity mask.
+        non_empty = int(series.notna().sum())
+        if non_empty == 0:
+            return "Categorical", 1.0  # nothing to infer from
+        numeric_ratio = numeric_series.notna().sum() / non_empty
+        
+        # If 90% or more of the non-empty cells are numeric, treat as numeric
         if numeric_ratio >= 0.9:
             return "Numeric", numeric_ratio
         
@@ -116,7 +123,7 @@ class ColumnarDatasetProcessor:
         # Checked second (not first) so a purely numeric column is never
         # misread as a date by pandas' looser datetime coercion.
         date_series = pd.to_datetime(series, errors='coerce')
-        date_ratio = date_series.notna().sum() / len(series)
+        date_ratio = date_series.notna().sum() / non_empty
         
         if date_ratio >= 0.9:
             print(f"  -> DateTime chosen for '{series.name}' (date_ratio={date_ratio:.2f})")
@@ -168,7 +175,8 @@ class ColumnarDatasetProcessor:
                 column_data["valid"] = numeric_series.notna().values  # before fillna: empty/unparseable = missing
                 numeric_series = numeric_series.fillna(0.0)  # Replace NaN with 0
                 
-                # Get min/max
+                # Get min/max (taken after the fill, so they include the 0 of
+                # missing cells; readers that need the real range scan the valid rows)
                 min_val = float(numeric_series.min())
                 max_val = float(numeric_series.max())
                 

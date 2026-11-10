@@ -509,7 +509,8 @@ namespace DataViz.Study
             t.True("stack relevant", PlotStateDiff.HasRelevantChange(a, b));
 
             b.ActiveLayerId = "L2";
-            t.Eq("stack select", "AddLayer[moles](->Dataset: moles.cdataset),SelectLayer[moles](movement->moles)",
+            // Selecting a layer that was just added gives no SelectLayer row (one user action, one row).
+            t.Eq("stack select", "AddLayer[moles](->Dataset: moles.cdataset),SetX[movement](#0->#2)",
                 string.Join(",", PlotStateDiff.DescribeStack(a, b, _ => null)));
 
             var load = new PlotSnapshot { DatasetName = "moles.cdataset" };

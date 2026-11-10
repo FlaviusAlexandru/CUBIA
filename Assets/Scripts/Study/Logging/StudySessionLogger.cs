@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using DataViz.Networking;
 using UnityEngine;
@@ -9,6 +10,8 @@ namespace DataViz.Study
     /// Writes the WAM+IA session CSV. Dashboard changes are attributed to the facilitator by running
     /// them inside <see cref="RunAsFacilitator"/>; any other OnPlotSettingsChanged is a participant
     /// change, named by diffing PlotSnapshots (scrub-only changes during playback are ignored).
+    /// Every row names its layer in the Layer column (LFR-28); column names are taken from each
+    /// layer's own dataset (see DatasetOf).
     /// IO errors never reach the caller: they come back as false + message, or stop the session.
     /// </summary>
     public sealed class StudySessionLogger : MonoBehaviour, IStudySessionLogger
@@ -36,10 +39,15 @@ namespace DataViz.Study
 
         static string DefaultLogFolder => Path.Combine(Application.persistentDataPath, "StudyLogs");
 
+        /// <summary>When set, used instead of the persisted folder (not saved). For the editor self-tests, which must not change the facilitator's setting.</summary>
+        public string LogFolderOverride { get; set; }
+
         public string LogFolder
         {
             get
             {
+                if (!string.IsNullOrEmpty(LogFolderOverride))
+                    return LogFolderOverride;
                 string stored = PlayerPrefs.GetString(LogFolderPrefsKey, "");
                 return string.IsNullOrWhiteSpace(stored) ? DefaultLogFolder : stored;
             }
@@ -173,7 +181,7 @@ namespace DataViz.Study
             LastError = null;
             m_Last = Capture(); // changes before the session are not part of it
 
-            WriteRow(ChangeSource.Facilitator, StudyActions.SessionStart, "", Path.GetFileName(path), "", RequestTag.None);
+            WriteRow(ChangeSource.Facilitator, StudyActions.SessionStart, "", "", Path.GetFileName(path), "", RequestTag.None);
             if (!IsLogging)
             {
                 // The very first write failed; WriteRow already stopped and notified.
@@ -190,7 +198,7 @@ namespace DataViz.Study
             if (!IsLogging)
                 return;
 
-            WriteRow(ChangeSource.Facilitator, StudyActions.SessionStop, "", "", "", RequestTag.None);
+            WriteRow(ChangeSource.Facilitator, StudyActions.SessionStop, "", "", "", "", RequestTag.None);
             if (!IsLogging)
                 return; // the write failed: WriteRow already closed the file and notified
 
@@ -214,7 +222,12 @@ namespace DataViz.Study
 
         // ---- facilitator ------------------------------------------------------------------
 
-        public void RunAsFacilitator(string action, string oldValue, string newValue, Action apply, bool writeRow = true)
+        /// <summary>Layer column: the edit layer's name, captured before apply runs, or "" for a plot-level action.</summary>
+        public void RunAsFacilitator(string action, string oldValue, string newValue, Action apply, bool writeRow = true) =>
+            RunAsFacilitator(action, DefaultLayer(action), oldValue, newValue, apply, writeRow);
+
+        /// <summary>layer: the Layer column ("" = plot-level; null = the active layer's name after apply ran, e.g. for AddLayer).</summary>
+        public void RunAsFacilitator(string action, string layer, string oldValue, string newValue, Action apply, bool writeRow = true)
         {
             m_FacilitatorDepth++;
             try
@@ -234,35 +247,44 @@ namespace DataViz.Study
             m_Last = Capture();
 
             if (writeRow && IsLogging)
-                WriteRow(ChangeSource.Facilitator, action, oldValue, newValue, "", RequestTag.None);
+                WriteRow(ChangeSource.Facilitator, action, layer ?? ActiveLayerName(), oldValue, newValue, "", RequestTag.None);
         }
 
-        public void LogFacilitatorAction(string action, string oldValue, string newValue)
+        /// <summary>Layer column as in the RunAsFacilitator overload without a layer.</summary>
+        public void LogFacilitatorAction(string action, string oldValue, string newValue) =>
+            LogFacilitatorAction(action, DefaultLayer(action), oldValue, newValue);
+
+        /// <summary>layer: the Layer column ("" = plot-level; null = the active layer's name).</summary>
+        public void LogFacilitatorAction(string action, string layer, string oldValue, string newValue)
         {
             m_Last = Capture();
             if (IsLogging)
-                WriteRow(ChangeSource.Facilitator, action, oldValue, newValue, "", RequestTag.None);
+                WriteRow(ChangeSource.Facilitator, action, layer ?? ActiveLayerName(), oldValue, newValue, "", RequestTag.None);
         }
 
-        // Layer overloads (contract for WP7): the layer is not written yet; WP7 adds the Layer column.
-        public void RunAsFacilitator(string action, string layer, string oldValue, string newValue, Action apply, bool writeRow = true) =>
-            RunAsFacilitator(action, oldValue, newValue, apply, writeRow);
+        // The edit layer is what a legacy request acts on (a remove then changes the active layer,
+        // so this is read before apply runs).
+        string DefaultLayer(string action)
+        {
+            if (StudyActions.IsPlotLevel(action) || m_Manager == null || !m_Manager.HasEditLayer)
+                return "";
+            return m_Manager.EditLayer.Name ?? "";
+        }
 
-        public void LogFacilitatorAction(string action, string layer, string oldValue, string newValue) =>
-            LogFacilitatorAction(action, oldValue, newValue);
+        string ActiveLayerName() => m_Manager != null ? m_Manager.ActiveLayer?.Name ?? "" : "";
 
         public void LogRequest(string text, RequestTag tag)
         {
             if (string.IsNullOrWhiteSpace(text) || !IsLogging)
                 return;
-            WriteRow(ChangeSource.Request, StudyActions.Note, "", "", text, tag);
+            WriteRow(ChangeSource.Request, StudyActions.Note, "", "", "", text, tag);
         }
 
         public void LogMarker(string note = "")
         {
             if (!IsLogging)
                 return;
-            WriteRow(ChangeSource.Marker, StudyActions.Marker, "", "", note ?? "", RequestTag.None);
+            WriteRow(ChangeSource.Marker, StudyActions.Marker, "", "", "", note ?? "", RequestTag.None);
         }
 
         // ---- participant detection --------------------------------------------------------
@@ -282,19 +304,19 @@ namespace DataViz.Study
 
             if (IsLogging)
             {
-                var changes = PlotStateDiff.Describe(m_Last, current, m_Manager.LoadedDataset);
-                string state = PlotStateJson.Write(current, m_Manager.LoadedDataset);
+                List<LayerChange> changes = PlotStateDiff.DescribeStack(m_Last, current, DatasetOf);
+                string state = PlotStateJson.Write(current, DatasetOf);
                 if (changes.Count == 0)
                 {
-                    WriteRow(ChangeSource.Participant, StudyActions.Unknown, "", "", "", RequestTag.None, state);
+                    WriteRow(ChangeSource.Participant, StudyActions.Unknown, "", "", "", "", RequestTag.None, state);
                 }
                 else
                 {
-                    foreach (var change in changes)
+                    foreach (LayerChange change in changes)
                     {
                         if (!IsLogging)
                             break; // a write failed mid-way
-                        WriteRow(ChangeSource.Participant, change.action, change.oldValue, change.newValue, "", RequestTag.None, state);
+                        WriteRow(ChangeSource.Participant, change.Action, change.Layer, change.OldValue, change.NewValue, "", RequestTag.None, state);
                     }
                 }
             }
@@ -313,7 +335,27 @@ namespace DataViz.Study
 
         PlotSnapshot Capture() => m_Manager != null ? PlotSnapshot.Capture(m_Manager) : null;
 
-        void WriteRow(ChangeSource source, string action, string oldValue, string newValue,
+        /// <summary>
+        /// The loaded dataset for a layer's file name, for column names: the instance a layer of the
+        /// plot uses, else DatasetRegistry (cached; null when the file is not there). A removed
+        /// layer's dataset is never needed (its row names only the file).
+        /// </summary>
+        DatasetColumnar DatasetOf(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName))
+                return null;
+            if (m_Manager != null)
+            {
+                foreach (PlotLayer layer in m_Manager.Layers)
+                {
+                    if (layer.Dataset != null && layer.DatasetName == fileName)
+                        return layer.Dataset;
+                }
+            }
+            return DatasetRegistry.Get(fileName);
+        }
+
+        void WriteRow(ChangeSource source, string action, string layer, string oldValue, string newValue,
                       string requestText, RequestTag tag, string plotState = null)
         {
             if (m_Writer == null)
@@ -327,6 +369,7 @@ namespace DataViz.Study
                 Part = Part,
                 Source = source,
                 Action = action ?? "",
+                Layer = layer ?? "",
                 OldValue = oldValue ?? "",
                 NewValue = newValue ?? "",
                 RequestText = requestText ?? "",
@@ -368,7 +411,7 @@ namespace DataViz.Study
                 return "";
             try
             {
-                return PlotStateJson.Write(PlotSnapshot.Capture(m_Manager), m_Manager.LoadedDataset);
+                return PlotStateJson.Write(PlotSnapshot.Capture(m_Manager), DatasetOf);
             }
             catch (Exception e)
             {

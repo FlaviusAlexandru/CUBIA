@@ -8,16 +8,17 @@ namespace DataViz
     /// clock and normalised layers.
     ///
     /// Two modes, switched by ValidRowsOnly:
-    /// - false (WP1 legacy pinning): DatasetColumn.MinValue/MaxValue, exactly what positions and the
-    ///   time window used before layers. Those include the 0 the preprocessor stores for an empty
-    ///   cell, so single-layer output stays bit-identical.
-    /// - true (LFR-11): min and max over the rows where HasValue is true, scanned once and cached
-    ///   per (dataset instance, column). WP2 switches the default to true.
+    /// - true (default, LFR-11): min and max over the rows where HasValue is true, scanned once and
+    ///   cached per (dataset instance, column). A column without empty cells gives exactly its
+    ///   MinValue/MaxValue; a sparse one no longer starts at the 0 stored for an empty cell
+    ///   (accepted change, DECISIONS.md E5).
+    /// - false (WP1 legacy pinning): DatasetColumn.MinValue/MaxValue, what positions and the time
+    ///   window used before layers, including that placeholder 0. Kept for comparison tests.
     /// </summary>
     public static class ColumnRange
     {
-        /// <summary>See the class comment. WP2 owns the switch to true.</summary>
-        public static bool ValidRowsOnly = false;
+        /// <summary>See the class comment.</summary>
+        public static bool ValidRowsOnly = true;
 
         struct Range { public bool Valid; public float Min, Max; }
 

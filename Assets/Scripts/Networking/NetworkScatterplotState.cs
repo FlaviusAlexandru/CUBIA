@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
@@ -8,10 +10,13 @@ namespace DataViz.Networking
     /// <summary>
     /// The shared plot, on an in-scene NetworkObject (created by Tools/CUBIA/Multiplayer/1 Setup Network).
     ///
-    /// Host: watches MultiplayerScatterplotManager and publishes a PlotSnapshot whenever a shared
-    /// setting really changed (late joiners get it automatically). Clients: apply every published
-    /// snapshot to their manager, and send their own edits to the host (TryForwardToHost, called
-    /// from the manager's Request…Rpc methods) instead of applying them. Last change wins.
+    /// Host: watches MultiplayerScatterplotManager and publishes a PlotSnapshot (the whole layer
+    /// stack, LFR-30) whenever a shared setting really changed (late joiners get it automatically).
+    /// Every layer that names a dataset carries the host's file hash. Clients: apply every published
+    /// snapshot to their manager, hiding (LocalUnavailable) each layer whose file they lack or have
+    /// in another version, and send their own edits to the host (TryForwardToHost, called from the
+    /// manager's Request…Rpc methods) instead of applying them. Last change wins. The active layer
+    /// is part of the snapshot, so it is shared by all players (Q15).
     /// Also carries the presenter-mode flag, who changed the plot last, and the player list.
     /// Offline (not spawned) this component does nothing.
     /// </summary>
@@ -32,8 +37,16 @@ namespace DataViz.Networking
 
         MultiplayerScatterplotManager m_Manager;
         ulong? m_RequestSender;   // set while the host applies a client's request
-        string m_HashedDatasetName;
-        string m_DatasetHash = "";
+
+        // Host: dataset name -> file hash, so publishing (every manager event, also during playback)
+        // does not touch the file system. Cleared when a dataset is (re)loaded.
+        readonly Dictionary<string, string> m_HashByName = new();
+        bool m_HasPublished;
+
+        // Client: true while a snapshot is being applied (its own events must not re-apply it), and
+        // the local stack's shape right after the last apply (see OnClientDatasetLoaded).
+        bool m_Applying;
+        int m_AppliedSignature;
 
         /// <summary>True offline and on the host; false on a connected client.</summary>
         public static bool IsLocalHostOrOffline => Instance == null || !Instance.IsSpawned || Instance.IsServer;
@@ -89,10 +102,12 @@ namespace DataViz.Networking
                 m_PresenterMode.Value = false;
                 m_LastChangedBy.Value = default;
                 NetworkManager.OnClientDisconnectCallback += OnClientDisconnected;
+                m_HashByName.Clear();
+                m_HasPublished = false;
                 if (m_Manager != null)
                 {
                     m_Manager.OnPlotSettingsChanged += OnManagerChanged;
-                    m_Manager.OnDatasetLoaded += OnManagerChanged;
+                    m_Manager.OnDatasetLoaded += OnManagerDatasetLoaded;
                     PublishSnapshot(recordChanger: false);
                 }
             }
@@ -122,12 +137,16 @@ namespace DataViz.Networking
             if (m_Manager != null)
             {
                 m_Manager.OnPlotSettingsChanged -= OnManagerChanged;
-                m_Manager.OnDatasetLoaded -= OnManagerChanged;
+                m_Manager.OnDatasetLoaded -= OnManagerDatasetLoaded;
                 m_Manager.OnDatasetLoaded -= OnClientDatasetLoaded;
+
+                // Back to bounds computed from the local layers from the next redraw on. Nothing is
+                // raised here: despawn often comes with the scene unloading under the listeners.
+                m_Manager.SharedBoundsOverride = null;
             }
 
             // The manager keeps whatever it shows now: leaving returns to a local copy of the shared state.
-            m_HashedDatasetName = null;
+            m_HashByName.Clear();
             SharedPlotAuthority.ResetToOffline();
             SessionService.Instance?.SetPlayers(System.Array.Empty<PlayerInfo>());
             SessionService.Instance?.SetLastChangedBy("");
@@ -137,29 +156,39 @@ namespace DataViz.Networking
 
         void OnManagerChanged() => PublishSnapshot(recordChanger: true);
 
+        // A (re)load may have replaced a file on disk: hash again.
+        void OnManagerDatasetLoaded()
+        {
+            m_HashByName.Clear();
+            PublishSnapshot(recordChanger: true);
+        }
+
+        // The manager's Start sets HasInitialised after its first load without raising anything, so
+        // a start-up load that failed (or found no file) would otherwise publish nothing until the next change.
+        void Update()
+        {
+            if (!m_HasPublished && IsSpawned && IsServer && m_Manager != null && m_Manager.HasInitialised)
+                PublishSnapshot(recordChanger: false);
+        }
+
         void PublishSnapshot(bool recordChanger)
         {
+            if (m_Manager == null)
+                return;
             // When NGO loads the data scene this object spawns before the manager's Start has loaded a
-            // dataset; publishing the empty start-up state would only flash "You need …" on clients.
-            if (m_Manager.LoadedDataset == null)
+            // dataset; publishing that seed state would only flash "You need …" on clients. After Start
+            // an empty plot is published like any other (Q13: a plot may be emptied).
+            if (!m_Manager.HasInitialised && m_Manager.LoadedDataset == null)
                 return;
 
             PlotSnapshot next = PlotSnapshot.Capture(m_Manager);
-            if (next.DatasetName != m_HashedDatasetName)
-            {
-                m_HashedDatasetName = next.DatasetName;
-                m_DatasetHash = DatasetHash.Of(next.DatasetName);
-                SharedPlotAuthority.SetDatasetStatus(DatasetMatch.Match, next.DatasetName);
-            }
-
-            // Every dataset and subset layer carries its file's hash (DatasetHash.Of caches per file).
             foreach (LayerSnapshot layer in next.Layers)
             {
-                if (layer.Kind == (byte)LayerKind.Computed || string.IsNullOrEmpty(layer.DatasetName))
-                    continue;
-                layer.DatasetHash = layer.DatasetName == m_HashedDatasetName ? m_DatasetHash : DatasetHash.Of(layer.DatasetName);
+                if (!string.IsNullOrEmpty(layer.DatasetName))
+                    layer.DatasetHash = HostHash(layer.DatasetName);
             }
             next.Published = true;
+            SharedPlotAuthority.SetDatasetStatus(DatasetMatch.Match, MainDatasetName(next));
 
             double now = NetworkManager.ServerTime.Time;
             next.ScrubServerTime = now;
@@ -173,12 +202,46 @@ namespace DataViz.Networking
                     ? Mathf.Abs(current.ScrubAt(now) - next.TimeScrub) < tolerance
                     : current.TimeScrub == next.TimeScrub;
                 if (sameTime)
+                {
+                    m_HasPublished = true;
                     return;
+                }
             }
 
             m_Plot.Value = next;
+            m_HasPublished = true;
             if (recordChanger)
                 m_LastChangedBy.Value = new FixedString128Bytes(PlayerName(m_RequestSender ?? NetworkManager.LocalClientId));
+        }
+
+        string HostHash(string datasetName)
+        {
+            if (!m_HashByName.TryGetValue(datasetName, out string hash))
+                m_HashByName[datasetName] = hash = DatasetHash.Of(datasetName);
+            return hash;
+        }
+
+        /// <summary>
+        /// The dataset a snapshot is mainly about (status line, session dataset, offline restore):
+        /// the active layer's, a computed active layer's source's (or its own once frozen), else
+        /// the first layer that names one; "" for an empty plot.
+        /// </summary>
+        public static string MainDatasetName(PlotSnapshot snapshot)
+        {
+            LayerSnapshot active = snapshot?.ActiveLayer;
+            if (active == null)
+                return "";
+            if (!string.IsNullOrEmpty(active.DatasetName))
+                return active.DatasetName;
+            LayerSnapshot source = active.Kind == (byte)LayerKind.Computed ? snapshot.FindLayer(active.SourceLayerId) : null;
+            if (source != null && !string.IsNullOrEmpty(source.DatasetName))
+                return source.DatasetName;
+            foreach (LayerSnapshot layer in snapshot.Layers)
+            {
+                if (layer != null && !string.IsNullOrEmpty(layer.DatasetName))
+                    return layer.DatasetName;
+            }
+            return "";
         }
 
         [Rpc(SendTo.Server)]
@@ -194,25 +257,33 @@ namespace DataViz.Networking
                 return;
 
             m_RequestSender = sender;
-            try { Apply(request); }
+            try { ApplyRequest(m_Manager, request); }
             finally { m_RequestSender = null; }
         }
 
-        // Runs the same manager call the client made; on the host it applies normally and OnManagerChanged publishes it.
-        // Layer-scoped legacy ops run inside EditLayerScope(r.Layer), so they land on the layer the client
-        // was editing even if the host switched layers since; a request for a layer that no longer exists
-        // is dropped. Plot-level ops ignore r.Layer; layer ops take it as their explicit id.
-        void Apply(PlotRequest r)
+        /// <summary>
+        /// Host side of a client's request: runs the same manager call the client made; it applies
+        /// normally and OnManagerChanged publishes it. Layer-scoped legacy ops run inside
+        /// EditLayerScope(r.Layer), so they land on the layer the client was editing even if the host
+        /// switched layers since. A request naming a layer that no longer exists (removed while the
+        /// request was on its way) is dropped: false, nothing changes, no events. Plot-level ops
+        /// ignore r.Layer; Shuffle reads it as a list of ids.
+        /// </summary>
+        public static bool ApplyRequest(MultiplayerScatterplotManager m, PlotRequest r)
         {
-            MultiplayerScatterplotManager m = m_Manager;
-            if (ApplyPlotOrLayerOp(m, r))
-                return;
+            if (m == null)
+                return false;
 
-            if (!string.IsNullOrEmpty(r.Layer) && m.Stack.Find(r.Layer) == null)
+            bool plotLevel = r.Op is PlotOp.LoadDataset or PlotOp.TimeScrub or PlotOp.Playback or PlotOp.PlaybackRate
+                or PlotOp.Shuffle or PlotOp.ShuffleBackward or PlotOp.ShuffleForward or PlotOp.AddDatasetLayer;
+            if (!plotLevel && !string.IsNullOrEmpty(r.Layer) && m.Stack.Find(r.Layer) == null)
             {
                 Debug.Log($"[NetworkScatterplotState] Dropped {r.Op}: layer '{r.Layer}' no longer exists.");
-                return;
+                return false;
             }
+
+            if (ApplyPlotOrLayerOp(m, r))
+                return true;
 
             using (m.EditLayerScope(r.Layer))
             {
@@ -235,8 +306,10 @@ namespace DataViz.Networking
                     case PlotOp.GlyphAssignment: m.RequestGlyphAssignmentRpc(r.Text, r.Int); break;
                     case PlotOp.GlyphRanges: m.RequestSetGlyphRangesRpc(r.GlyphRanges); break;
                     case PlotOp.FilterRanges: m.RequestSetFilterRangesRpc(r.FilterRanges); break;
+                    default: return false;
                 }
             }
+            return true;
         }
 
         // Plot-level ops (no layer scope; Shuffle's r.Layer lists layer ids, read by the manager) and
@@ -284,26 +357,120 @@ namespace DataViz.Networking
 
         void OnPlotChanged(PlotSnapshot previous, PlotSnapshot current) => ApplyToManager(current);
 
-        // After an NGO scene load this object spawns before the manager's Start, which then loads its own
-        // start-up dataset over the host's: put the host's plot back whenever the dataset drifts away.
+        // After an NGO scene load this object spawns before the manager's Start, which then loads its
+        // own start-up dataset into the active layer: put the host's stack back when that changed it.
+        // OnDatasetLoaded also fires when a snapshot switches the active layer (risk 3); that happens
+        // inside ApplyToManager (m_Applying), and right after an apply the signature matches, so a
+        // re-apply can never trigger another one.
         void OnClientDatasetLoaded()
         {
+            if (m_Applying || m_Manager == null)
+                return;
             PlotSnapshot shared = m_Plot.Value;
-            if (m_Manager.CurrentDatasetName != shared.DatasetName && SharedPlotAuthority.DatasetStatus == DatasetMatch.Match)
+            if (shared != null && shared.Published && LocalStackSignature(m_Manager) != m_AppliedSignature)
                 ApplyToManager(shared);
         }
 
         void ApplyToManager(PlotSnapshot snapshot)
         {
-            DatasetMatch status = DatasetHash.Compare(snapshot.DatasetName, snapshot.DatasetHash);
-            SharedPlotAuthority.SetDatasetStatus(status, snapshot.DatasetName);
-            if (status != DatasetMatch.Match || m_Manager == null)
-                return; // without the host's exact dataset, column indices would mean nothing here
+            StackDatasetCheck check = DatasetHash.CheckStack(snapshot, DatasetHash.Of);
+            var problems = new List<string>(check.Missing);
+            problems.AddRange(check.Mismatched);
+            List<string> told = SharedPlotAuthority.SetDatasetStatus(check.Status, MainDatasetName(snapshot), problems);
+            foreach (string name in told)
+                ReportMissingDatasetRpc(ShortName(name), check.Mismatched.Contains(name));
 
-            if (m_Manager.LoadedDataset == null || m_Manager.CurrentDatasetName != snapshot.DatasetName)
-                m_Manager.LoadLocalDataset(snapshot.DatasetName);
+            if (m_Manager == null || snapshot == null || !snapshot.Published)
+                return; // nothing published yet: keep the local plot
 
-            m_Manager.ApplyNetworkSnapshot(snapshot, snapshot.ScrubAt(NetworkManager.ServerTime.Time));
+            m_Applying = true;
+            try { ApplySnapshot(m_Manager, snapshot, snapshot.ScrubAt(NetworkManager.ServerTime.Time), check); }
+            finally { m_Applying = false; }
+            m_AppliedSignature = LocalStackSignature(m_Manager);
+        }
+
+        /// <summary>
+        /// Client side of LFR-30: shows the host's whole stack, whatever this peer has. Layers in
+        /// check.Unavailable end up LocalUnavailable without data (WriteTo already does that for a
+        /// missing or other-version file; this adds layers whose file the host lacks and computed
+        /// layers on a hidden source). While some layer is hidden, the host's numeric axis bounds
+        /// replace the local ones so the layers this peer has sit where the host draws them;
+        /// categorical axes stay local (the snapshot does not carry them).
+        /// </summary>
+        public static void ApplySnapshot(MultiplayerScatterplotManager m, PlotSnapshot snapshot, float timeScrub, StackDatasetCheck check)
+        {
+            m.SharedBoundsOverride = null;
+            m.ApplyNetworkSnapshot(snapshot, timeScrub);
+
+            bool changed = false;
+            LayerSnapshot[] layers = snapshot.Layers ?? Array.Empty<LayerSnapshot>();
+            for (int i = 0; i < layers.Length && i < check.Unavailable.Length; i++)
+            {
+                if (!check.Unavailable[i] || layers[i] == null)
+                    continue;
+                PlotLayer layer = m.Stack.Find(layers[i].Id);
+                if (layer == null || (layer.LocalUnavailable && layer.Dataset == null))
+                    continue;
+                layer.LocalUnavailable = true;
+                layer.Dataset = null;
+                changed = true;
+            }
+
+            bool anyHidden = false;
+            foreach (PlotLayer layer in m.Layers)
+                anyHidden |= layer.LocalUnavailable;
+            if (anyHidden && snapshot.TryGetBounds(out AxisBounds host))
+            {
+                AxisBounds local = m.SharedBounds;
+                AxisBounds merged = local;
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    if ((snapshot.BoundsValid & (1 << axis)) != 0)
+                        merged.Set(axis, host.Get(axis));
+                }
+                if (!merged.SameAs(local))
+                {
+                    m.SharedBoundsOverride = merged;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                m.NotifyLayersChanged();
+        }
+
+        // The local stack's shape: what a stray dataset load would change.
+        static int LocalStackSignature(MultiplayerScatterplotManager m)
+        {
+            var h = new HashCode();
+            h.Add(m.ActiveLayerId);
+            foreach (PlotLayer layer in m.Layers)
+            {
+                h.Add(layer.Id);
+                h.Add(layer.Kind);
+                h.Add(layer.DatasetName);
+                h.Add(layer.LocalUnavailable);
+                h.Add(layer.Dataset != null);
+            }
+            return h.ToHashCode();
+        }
+
+        // Dataset names travel without extension and short enough for a FixedString128Bytes (UTF-8).
+        static FixedString128Bytes ShortName(string datasetName)
+        {
+            string name = Path.GetFileNameWithoutExtension(datasetName ?? "");
+            if (name.Length > 40) name = name.Substring(0, 40);
+            return new FixedString128Bytes(name);
+        }
+
+        /// <summary>R7: a client tells the host which dataset it lacks; the host posts it (once per client and dataset).</summary>
+        [Rpc(SendTo.Server)]
+        void ReportMissingDatasetRpc(FixedString128Bytes dataset, bool otherVersion, RpcParams rpcParams = default)
+        {
+            string who = PlayerName(rpcParams.Receive.SenderClientId);
+            SessionService.Instance?.PostMessage(otherVersion
+                ? $"{who} does not have {dataset} (other version)"
+                : $"{who} does not have {dataset}");
         }
 
         // ---------------------------------------------------------------- players, presenter, last change

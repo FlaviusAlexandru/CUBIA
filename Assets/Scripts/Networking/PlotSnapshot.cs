@@ -351,7 +351,8 @@ namespace DataViz.Networking
         /// Rebuilds the manager's stack from Layers and writes playback (no events; the manager
         /// raises them). Each layer's dataset is the manager's current instance when the layer
         /// keeps its id and dataset name, else DatasetRegistry.Get; a point layer whose dataset
-        /// cannot be loaded gets LocalUnavailable. NextLayerNumber becomes max(current, snapshot).
+        /// cannot be loaded, or whose published hash differs from the local file, gets LocalUnavailable
+        /// (and no dataset). NextLayerNumber becomes max(current, snapshot).
         /// </summary>
         public void WriteTo(Manager m, float timeScrub)
         {
@@ -366,10 +367,14 @@ namespace DataViz.Networking
                     PlotLayer existing = m.Stack.Find(ls.Id);
                     if (!string.IsNullOrEmpty(layer.DatasetName))
                     {
-                        layer.Dataset = existing != null && existing.DatasetName == layer.DatasetName && existing.Dataset != null
-                            ? existing.Dataset
-                            : DatasetRegistry.Get(layer.DatasetName);
-                        layer.LocalUnavailable = layer.IsPointLayer && layer.Dataset == null;
+                        // LNFR-04: a layer whose file here is not the host's version is never drawn
+                        // from the local file. Snapshots without hashes (Capture: undo, offline plot) skip the check.
+                        bool otherVersion = !global::DataViz.Networking.DatasetHash.MatchesLocal(layer.DatasetName, ls.DatasetHash);
+                        layer.Dataset = otherVersion ? null
+                            : existing != null && existing.DatasetName == layer.DatasetName && existing.Dataset != null
+                                ? existing.Dataset
+                                : DatasetRegistry.Get(layer.DatasetName);
+                        layer.LocalUnavailable = otherVersion || (layer.IsPointLayer && layer.Dataset == null);
                     }
                     layers.Add(layer);
                 }

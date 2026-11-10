@@ -40,8 +40,15 @@ namespace DataViz.Lobby
         /// <summary>True when the player came to the lobby from a plot that Back restores.</summary>
         public bool HasOfflinePlot => m_OfflinePlot != null;
 
-        /// <summary>Dataset a session hosted from the lobby runs: the plot the player came from, else the launch choice.</summary>
-        public string HostDatasetName => m_OfflinePlot != null ? m_OfflinePlot.DatasetName : LaunchContext.DatasetName;
+        /// <summary>Dataset a session hosted from the lobby runs: the main dataset of the plot the player came from, else the launch choice.</summary>
+        public string HostDatasetName
+        {
+            get
+            {
+                string main = NetworkScatterplotState.MainDatasetName(m_OfflinePlot);
+                return main.Length > 0 ? main : LaunchContext.DatasetName ?? "";
+            }
+        }
 
         /// <summary>True once the table was aligned to the real table in this lobby visit or an earlier one.</summary>
         public bool HasAlignedTable => m_HasAlignedTable;
@@ -78,8 +85,9 @@ namespace DataViz.Lobby
         {
             if (m_Session != null && m_Session.IsInSession) return;
 
+            // The whole layer stack, an emptied one too (Q13), once Start has loaded the plot.
             MultiplayerScatterplotManager manager = MultiplayerScatterplotManager.Instance;
-            if (manager != null && manager.LoadedDataset != null)
+            if (manager != null && (manager.HasInitialised || manager.LoadedDataset != null))
                 m_OfflinePlot = PlotSnapshot.Capture(manager);
             SceneFlow.Load(SceneNames.Lobby);
         }
@@ -138,7 +146,8 @@ namespace DataViz.Lobby
         void RestoreOfflinePlotOnNextLoad()
         {
             if (m_OfflinePlot == null) return;
-            LaunchContext.DatasetName = m_OfflinePlot.DatasetName;
+            string main = NetworkScatterplotState.MainDatasetName(m_OfflinePlot);
+            if (main.Length > 0) LaunchContext.DatasetName = main;
             LaunchContext.CameFromWizard = false;
             m_RestorePlotOnDataLoad = true;
         }
@@ -215,24 +224,31 @@ namespace DataViz.Lobby
             }
         }
 
-        /// <summary>Applies the offline plot once the manager has loaded its start-up dataset (in its Start).</summary>
+        /// <summary>
+        /// Applies the offline plot (the whole layer stack) once the manager's Start has loaded its
+        /// start-up dataset. Each layer resolves its own dataset; one whose file is gone is kept but
+        /// hidden. If every dataset of a non-empty plot is gone, what Start loaded is kept instead.
+        /// </summary>
         static IEnumerator RestorePlot(PlotSnapshot snapshot)
         {
             float giveUp = Time.unscaledTime + k_RestoreTimeout;
             MultiplayerScatterplotManager manager;
-            while ((manager = MultiplayerScatterplotManager.Instance) == null || manager.LoadedDataset == null)
+            while ((manager = MultiplayerScatterplotManager.Instance) == null || !manager.HasInitialised)
             {
                 if (Time.unscaledTime > giveUp) yield break;
                 yield return null;
             }
 
-            if (manager.CurrentDatasetName != snapshot.DatasetName)
+            bool namesAny = false, hasAny = false;
+            foreach (LayerSnapshot layer in snapshot.Layers)
             {
-                if (DatasetHash.Of(snapshot.DatasetName).Length == 0) yield break; // file gone: keep what loaded
-                manager.LoadLocalDataset(snapshot.DatasetName);
+                if (layer == null || string.IsNullOrEmpty(layer.DatasetName)) continue;
+                namesAny = true;
+                hasAny |= DatasetHash.Of(layer.DatasetName).Length > 0;
             }
-            if (manager.LoadedDataset != null && manager.CurrentDatasetName == snapshot.DatasetName)
-                manager.ApplyNetworkSnapshot(snapshot, snapshot.TimeScrub);
+            if (namesAny && !hasAny) yield break; // files gone: keep what loaded
+
+            manager.ApplyNetworkSnapshot(snapshot, snapshot.TimeScrub);
         }
 
         // ------------------------------------------------------------------ co-located table

@@ -128,6 +128,7 @@ def test_csv_outputs(tmp):
     check("MoleOrder 1..12 in moles", [int(m["MoleOrder"]) for m in moles] == list(range(1, 13)))
     check("PathEfficiency within 0..1", all(0 <= float(m["PathEfficiency"]) <= 1 for m in moles))
     check("MainHand Right (pilot RightControllerMain=False is wrong)", all(m["MainHand"] == "Right" for m in moles))
+    check_end_time(moles)
 
     times = [float(r["Time"]) for r in mv]
     orders = [int(r["MoleOrder"]) for r in mv]
@@ -136,6 +137,8 @@ def test_csv_outputs(tmp):
     check("movement MoleOrder covers 1..12", sorted(set(orders)) == list(range(1, 13)), sorted(set(orders)))
     check("movement starts at first spawn", times[0] >= 0, times[0])
     check("movement ends at last hit (~37.4 s)", 37.0 < times[-1] < 37.6, times[-1])
+    last_end = max(float(m["EndTime"]) for m in moles) if all(is_num(m.get("EndTime", "")) for m in moles) else math.nan
+    check("last EndTime = last hit (movement ends there)", times[-1] <= last_end < 37.6, (times[-1], last_end))
     check("ControllerSpeed has no empty/NaN",
           all(is_num(r["ControllerSpeed"]) and not math.isnan(float(r["ControllerSpeed"])) for r in mv))
     check("laser rows on the wall plane", all(6.0 < float(r["LaserZ"]) < 7.0 for r in mv))
@@ -161,6 +164,53 @@ def test_csv_outputs(tmp):
             if filled and sum(map(is_num, filled)) / len(filled) >= 0.9 and col not in MAY_BE_EMPTY:
                 empty = 1 - len(filled) / len(vals)
                 check(f"{kind}.{col}: <10% empty", empty < 0.10, f"{empty:.0%}")
+
+
+def check_end_time(moles, tag=""):
+    header = list(moles[0].keys())
+    check(f"{tag}moles has EndTime right after SpawnTime",
+          "EndTime" in header and header.index("EndTime") == header.index("SpawnTime") + 1, header)
+    ends = [m.get("EndTime", "") for m in moles]
+    filled = all(is_num(e) and math.isfinite(float(e)) for e in ends)
+    check(f"{tag}EndTime never empty", filled, ends)
+    check(f"{tag}EndTime >= SpawnTime", filled and all(float(e) >= float(m["SpawnTime"]) for e, m in zip(ends, moles)),
+          [(m["SpawnTime"], e) for e, m in zip(ends, moles)])
+    return filled
+
+
+def test_end_time_not_resolved(tmp):
+    """The pilot hits every mole. Cut the outcome events after the last spawn (and those between
+    spawns 6 and 7) so some moles are NotResolved: EndTime must still be filled."""
+    print("EndTime for moles without an outcome")
+    with open(EVENT, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f, delimiter=";"))
+    ev = rows[0].index("Event")
+    spawn_rows = [i for i, r in enumerate(rows) if len(r) > ev and r[ev].strip() == "Mole Spawned"]
+    outcome = ("Mole Hit", "Expired Mole Hit", "Mole Expired")
+    cut = [i for i, r in enumerate(rows) if len(r) > ev and r[ev].strip() in outcome
+           and (i > spawn_rows[-1] or spawn_rows[5] < i < spawn_rows[6])]
+    logs = tmp / "unresolved"
+    logs.mkdir()
+    event = logs / EVENT.name
+    with open(event, "w", encoding="utf-8", newline="") as f:
+        csv.writer(f, delimiter=";", lineterminator="\n").writerows(r for i, r in enumerate(rows) if i not in cut)
+    out = tmp / "unresolved_csv"
+    p, _ = run("--event", event, "--sample", SAMPLE, "--participant", "07", "--part", "1", "--out", out,
+               "--no-preprocess")
+    check("exit code 0", p.returncode == 0, p.stderr)
+    if p.returncode != 0:
+        return
+    moles, mv = read(out / "P07_part1_moles.csv"), read(out / "P07_part1_movement.csv")
+    open_ = [i for i, m in enumerate(moles) if m["Outcome"] == "NotResolved"]
+    check("last mole NotResolved, ReactionTime empty", len(moles) == 12 and 11 in open_ and moles[11]["ReactionTime"] == "",
+          [m["Outcome"] for m in moles])
+    if not check_end_time(moles, "NotResolved: "):
+        return
+    check("NotResolved EndTime <= next SpawnTime",
+          all(float(moles[i]["EndTime"]) <= float(moles[i + 1]["SpawnTime"]) for i in open_ if i + 1 < len(moles)),
+          [(i, moles[i]["EndTime"]) for i in open_])
+    check("NotResolved last mole: EndTime = game end (>= end of movement)",
+          float(moles[11]["EndTime"]) >= float(mv[-1]["Time"]), (moles[11]["EndTime"], mv[-1]["Time"]))
 
 
 def test_logs_folder_and_preprocessor(tmp):
@@ -192,7 +242,7 @@ def test_logs_folder_and_preprocessor(tmp):
     want = {
         "moles": {"Phase": "Categorical", "Outcome": "Categorical", "MainHand": "Categorical",
                   "MoleOrderLabel": "Categorical", "HitOffset": "Numeric", "ReactionTimeOrLifetime": "Numeric",
-                  "SpawnTime": "Numeric", "MoleX": "Numeric"},
+                  "SpawnTime": "Numeric", "EndTime": "Numeric", "MoleX": "Numeric"},
         "movement": {"ControllerSpeed": "Numeric", "Time": "Numeric", "ControllerX": "Numeric",
                      "MoleOrderLabel": "Categorical"},
         "combined": {"RowType": "Categorical", "MoleOrderLabel": "Categorical", "X": "Numeric", "Time": "Numeric"},
@@ -437,6 +487,7 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="wamia_test_"))
     try:
         test_csv_outputs(tmp)
+        test_end_time_not_resolved(tmp)
         if PREPROCESSOR.is_file():
             test_logs_folder_and_preprocessor(tmp)
             test_auto(tmp)

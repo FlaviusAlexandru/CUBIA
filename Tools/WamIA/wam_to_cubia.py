@@ -77,7 +77,7 @@ MOVEMENT_COLS = ["Time", "Part", "Phase", "MoleOrder", "MoleOrderLabel",
                  "ControllerX", "ControllerY", "ControllerZ", "ControllerSpeed",
                  "LaserX", "LaserY", "LaserZ", "HeadX", "HeadY", "HeadZ", "HeadYaw", "HeadPitch"]
 MOLES_COLS = ["Part", "Phase", "MoleOrder", "MoleOrderLabel", "GridX", "GridY",
-              "MoleX", "MoleY", "MoleZ", "SpawnTime", "Outcome", "ReactionTime",
+              "MoleX", "MoleY", "MoleZ", "SpawnTime", "EndTime", "Outcome", "ReactionTime",
               "ReactionTimeOrLifetime", "HitOffset", "HitOffsetX", "HitOffsetY",
               "DistFromLastMole", "ControllerTravel", "PathEfficiency", "PeakSpeed", "MainHand"]
 COMBINED_COLS = ["RowType", "X", "Y", "Z", "Time", "MoleOrder", "Label", "MoleOrderLabel",
@@ -369,6 +369,7 @@ def convert(event_path, sample_path, meta_path, participant, part, downsample=1,
     moles["HitOffsetY"] = hy
     moles["HitOffset"] = np.sqrt(moles["HitOffsetX"] ** 2 + moles["HitOffsetY"] ** 2)
     end_t = np.asarray(end_t, dtype=float)
+    moles["EndTime"] = end_t
     resolved_end = [e for e, o in zip(end_t, outc) if o != "NotResolved"]
     play_end = max(resolved_end) if len(resolved_end) == n else game_end
 

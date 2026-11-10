@@ -71,7 +71,8 @@ the next mole), `MoleOrderLabel` ("Mole 01", text for colour), `ControllerX/Y/Z`
 `HeadX/Y/Z`, `HeadYaw` (degrees, + = right), `HeadPitch` (degrees, + = up).
 
 **moles**: `Part`, `Phase`, `MoleOrder`, `MoleOrderLabel`, `GridX`, `GridY` (from MoleId
-`OOOOXYY`), `MoleX/Y/Z`, `SpawnTime`, `Outcome` (`Hit`, `Expired`, `ExpiredHit`, or `NotResolved` if the
+`OOOOXYY`), `MoleX/Y/Z`, `SpawnTime`, `EndTime` (when the mole was hit or expired; if the game stopped first, the
+next spawn or the game end; never empty), `Outcome` (`Hit`, `Expired`, `ExpiredHit`, or `NotResolved` if the
 game stopped first), `ReactionTime` (MoleActivatedDuration of the hit; **empty = not hit**),
 `ReactionTimeOrLifetime` (always filled: reaction time, or time until expiry),
 `HitOffset` (distance of the hit from the mole centre, √(x²+y²) of MoleSurfaceHitLocation, in mole-local
@@ -85,9 +86,8 @@ line), `PeakSpeed` (max ControllerSpeed in that window), `MainHand`.
 numeric), `MoleOrderLabel` ("Mole 01", categorical: use this one for colour), `Phase`, `Part`.
 
 **Empty cells:** only ReactionTime and HitOffset/X/Y are ever empty, and only for moles that were not
-hit. Note that CUBIA's preprocessor reads a numeric column with ≥10% empty cells as Categorical. If
-more than 10% of a play-through's moles are missed, those four columns become categorical in the
-.cdataset. Use `ReactionTimeOrLifetime` for size/colour when that happens.
+hit. They stay Numeric in the .cdataset however many moles are missed: CUBIA's preprocessor judges a
+column's type on its non-empty cells and marks the empty ones as missing.
 
 **Timing note:** `ReactionTime` comes from the game clock (MoleActivatedDuration), while `SpawnTime`
 and `Time` come from log timestamps. The two can differ by up to ~0.1 s per mole.

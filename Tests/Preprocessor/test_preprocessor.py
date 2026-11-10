@@ -7,7 +7,7 @@ Usage (from the repo root):
   python Tests/Preprocessor/test_preprocessor.py committed           # real CSVs vs committed ProcessedData/
 
 `fixtures` checks the parsing rules (decimal commas, dot decimals, timestamps,
-empty cells -> v3 validity mask).
+empty cells -> v3 validity mask, column types judged on the non-empty cells).
 `committed` checks that every .cdataset in git was regenerated after its CSV
 or the script last changed.
 """
@@ -40,10 +40,17 @@ EXPECTED_TYPES = {
     "dot_decimal": {"Dim_0": "Numeric", "Dim_1": "Numeric", "Dim_2": "Numeric", "label": "Categorical"},
     "timestamps": {"Timestamp": "DateTime", "value": "Numeric", "state": "Categorical"},
     "missing_values": {"id": "Numeric", "value": "Numeric", "group": "Categorical", "when": "DateTime"},
+    # 30% empty cells must not change a column's type (the ratios are taken over non-empty
+    # cells); an all-empty column and a column whose non-empty cells are half text stay Categorical.
+    "sparse_columns": {"id": "Numeric", "reaction": "Numeric", "when": "DateTime", "note": "Categorical",
+                       "label": "Categorical", "mixed": "Categorical"},
 }
 EXPECTED_RANGES = {
     ("decimal_comma", "X slab [mm]"): (32.5, 582.5),
     ("decimal_comma", "Y slab [mm]"): (518.5, 618.5),
+    # Known: min/max are taken after empty cells are filled with 0, so the stored minimum of a
+    # sparse column is 0, not its smallest value (5.0 here). Readers scan the valid rows instead.
+    ("sparse_columns", "reaction"): (0.0, 10.0),
 }
 # Validity mask (format v3): rows that have a value, per column. Empty cells must
 # be marked missing even though the data arrays still hold 0 / index 0 for them;
@@ -54,6 +61,12 @@ EXPECTED_VALID = {
     ("missing_values", "group"): 8,
     ("missing_values", "when"): 9,
     ("dot_decimal", "label"): None,  # None = every row
+    ("sparse_columns", "id"): None,
+    ("sparse_columns", "reaction"): 7,   # 3 of 10 missing
+    ("sparse_columns", "when"): 7,
+    ("sparse_columns", "note"): 0,
+    ("sparse_columns", "label"): 7,
+    ("sparse_columns", "mixed"): 8,
 }
 
 

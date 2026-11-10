@@ -88,9 +88,9 @@ Developed and tested on:
 5. **Commit everything together:** the CSV, the `.cdataset` and both `.meta` files. CI fails if a `.cdataset` doesn't match its CSV.
 
 **Type rules:**
-- **Numeric:** a column is numeric when at least 90% of its values parse as numbers.
-- **DateTime:** otherwise, a column is DateTime when at least 90% of its values parse as dates. Strings that look like numbers are never read as dates.
-- **Categorical:** anything else.
+- **Numeric:** a column is numeric when at least 90% of its non-empty values parse as numbers. Empty cells don't count against it; they are marked missing in the validity mask.
+- **DateTime:** otherwise, a column is DateTime when at least 90% of its non-empty values parse as dates. Strings that look like numbers are never read as dates.
+- **Categorical:** anything else, including a column with no values at all.
 
 ## XR setup
 
@@ -162,7 +162,7 @@ If you change the parsing on purpose, run `fixtures --update`, review the diff, 
 - **Second Play run crash:** the Unity editor's second Play-mode run can crash when no headset is connected to SteamVR.
 - **Multiplayer:** not implemented.
 - **Instanced Mesh back-end:** its material is opaque, so filtered-out points don't fade there. The VFX Graph back-end is the one in use.
-- **Sparse numeric columns:** a numeric column with more than 10% empty cells is classified as Categorical.
+- **Sparse numeric columns:** a numeric column's stored min/max include 0 for its empty cells (the preprocessor fills them before taking the range). CUBIA scans the valid rows when it needs the real range.
 - **Glyph range dates on Quest builds:** the date labels on glyph range handles need the source CSV. On a Quest build they show elapsed time instead.
 
 ## Future work

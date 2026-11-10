@@ -74,6 +74,8 @@ namespace DataViz.Study
         // Filters
         DropdownField m_FilterColumn, m_FilterValue;
         Button m_FilterClear;
+        // Range sliders (numeric / DateTime columns), like the VR menu's GlyphRangeEditor
+        DashboardRangeEditor m_GlyphRanges, m_FilterRanges;
         // Time
         Slider m_TimeScrub;
         Button m_PlayPause;
@@ -228,6 +230,12 @@ namespace DataViz.Study
             m_FilterColumn = Find<DropdownField>(r, DashboardIds.FilterColumnDropdown);
             m_FilterValue = Find<DropdownField>(r, DashboardIds.FilterValueDropdown);
             m_FilterClear = Find<Button>(r, DashboardIds.FilterClear);
+            VisualElement glyphRangesHost = Find<VisualElement>(r, DashboardIds.GlyphRanges);
+            if (glyphRangesHost != null)
+                m_GlyphRanges = new DashboardRangeEditor(glyphRangesHost, DashboardRangeEditor.RangeTarget.Glyph);
+            VisualElement filterRangesHost = Find<VisualElement>(r, DashboardIds.FilterRanges);
+            if (filterRangesHost != null)
+                m_FilterRanges = new DashboardRangeEditor(filterRangesHost, DashboardRangeEditor.RangeTarget.Filter);
 
             m_TimeScrub = Find<Slider>(r, DashboardIds.TimeScrubSlider);
             m_PlayPause = Find<Button>(r, DashboardIds.PlayPauseButton);
@@ -341,6 +349,8 @@ namespace DataViz.Study
             OnChoice(m_FilterColumn, OnFilterColumnChanged);
             OnChoice(m_FilterValue, OnFilterValueChanged);
             OnClick(m_FilterClear, ClearFilters);
+            if (m_GlyphRanges != null) m_GlyphRanges.ApplyRequested += ApplyGlyphRanges;
+            if (m_FilterRanges != null) m_FilterRanges.ApplyRequested += ApplyFilterRanges;
 
             RegisterSlider(m_TimeScrub, m_ScrubDrag, OnScrubDragged);
             OnClick(m_PlayPause, TogglePlayback);
@@ -590,6 +600,10 @@ namespace DataViz.Study
                 // Glyphs
                 PopulateGlyphLabels(m.GlyphColumnIndex);
                 RefreshGlyphShape();
+
+                // Range sliders: rebuild only when the column, dataset or committed ranges changed.
+                m_GlyphRanges?.Sync(m);
+                m_FilterRanges?.Sync(m);
             }
             finally
             {
@@ -846,6 +860,40 @@ namespace DataViz.Study
 
         static string FilterValueName(string label) =>
             string.IsNullOrEmpty(label) ? ScatterplotUI.k_AnyFilterValueOption : label;
+
+        void ApplyGlyphRanges(List<MultiplayerScatterplotManager.GlyphRange> ranges)
+        {
+            if (m_Manager == null) return;
+            string old = DashboardRangeEditor.Describe(m_Manager.GlyphRanges, true);
+            bool applied = false;
+            Facilitate(StudyActions.SetGlyphRanges, old, DashboardRangeEditor.Describe(ranges, true),
+                () => applied = m_Manager.RequestSetGlyphRangesRpc(ranges));
+            if (!applied)
+            {
+                m_GlyphRanges?.MarkApplyFailed();
+                ShowToast("Glyph ranges were not applied (see the Console).", ToastKind.Warning);
+            }
+        }
+
+        void ApplyFilterRanges(List<MultiplayerScatterplotManager.GlyphRange> ranges)
+        {
+            if (m_Manager == null || m_Manager.Filters.Count == 0) return;
+            var current = m_Manager.Filters[0].Ranges.ConvertAll(r =>
+                new MultiplayerScatterplotManager.GlyphRange { min = r.min, max = r.max });
+            string old = current.Count > 0
+                ? DashboardRangeEditor.Describe(current, false)
+                : FilterValueName(m_Manager.FilterLabel);
+            var filterRanges = ranges.ConvertAll(r => new MultiplayerScatterplotManager.FilterRange { min = r.min, max = r.max });
+            bool applied = false;
+            Facilitate(StudyActions.SetFilterRanges, old,
+                filterRanges.Count > 0 ? DashboardRangeEditor.Describe(ranges, false) : ScatterplotUI.k_AnyFilterValueOption,
+                () => applied = m_Manager.RequestSetFilterRangesRpc(filterRanges));
+            if (!applied)
+            {
+                m_FilterRanges?.MarkApplyFailed();
+                ShowToast("Filter ranges were not applied (see the Console).", ToastKind.Warning);
+            }
+        }
 
         void ClearFilters()
         {

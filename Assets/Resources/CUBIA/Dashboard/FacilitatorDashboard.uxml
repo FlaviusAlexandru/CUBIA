@@ -70,6 +70,8 @@
                 <Label text="Glyphs" class="dash-section__header" />
                 <DropdownField name="glyph-label" label="Label" />
                 <DropdownField name="glyph-shape" label="Shape" />
+                <!-- Range sliders for numeric/date glyph columns; built by DashboardRangeEditor. -->
+                <VisualElement name="glyph-ranges" />
             </VisualElement>
 
             <!-- Filters -->
@@ -77,6 +79,8 @@
                 <Label text="Filters" class="dash-section__header" />
                 <DropdownField name="filter-column" label="Column" />
                 <DropdownField name="filter-value" label="Value" />
+                <!-- Range sliders for numeric/date filter columns; built by DashboardRangeEditor. -->
+                <VisualElement name="filter-ranges" />
                 <VisualElement class="dash-row dash-row--end">
                     <Button name="filter-clear" text="Clear filters" class="dash-button" />
                 </VisualElement>

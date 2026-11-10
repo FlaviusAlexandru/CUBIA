@@ -46,7 +46,11 @@ namespace DataViz
         public bool IsPinned => m_IsPinned;
 
         // [Multiplayer] Dataset row of the pinned point, or -1 when nothing is pinned (read by PinnedTooltipSync).
-        public int PinnedRowIndex => m_IsPinned ? ResolveRowIndex(m_PinnedPointIndex) : -1;
+        public int PinnedRowIndex => !m_IsPinned ? -1 : m_Frame != null ? m_PinnedRow : ResolveRowIndex(m_PinnedPointIndex);
+
+        // [Multiplayer] Id of the layer the pinned point belongs to ("" when nothing is pinned or the
+        // points came without a frame). A row index alone is ambiguous once there are two layers.
+        public string PinnedLayerId => m_IsPinned && m_Frame != null ? m_PinnedLayerId ?? "" : "";
 
         // [Multiplayer] Bumped whenever SetPointData replaces the plotted points, so cached lookups can refresh.
         public int PointDataVersion { get; private set; }
@@ -60,9 +64,16 @@ namespace DataViz
         private List<Color> m_PointColors = new();
         private List<int> m_RowIndices = null; // maps positions[i] -> dataset.Rows[originalIndex]; null means identity mapping
 
+        // Frame-aware point data (ScatterplotVisualizer): the frame of the build, and per hover point
+        // its index in the frame's concatenated buffer (null = the same index).
+        private PlotFrame m_Frame;
+        private List<int> m_BufferIndices;
+
         private int m_HoveredPointIndex = -1;
         private bool m_IsPinned = false;
-        private int m_PinnedPointIndex = -1;
+        private int m_PinnedPointIndex = -1;   // index in the current point list, -1 when the pinned row is not plotted now
+        private string m_PinnedLayerId = "";   // frame-aware pin: (layer id, row) survives rebuilds
+        private int m_PinnedRow = -1;
 
 
         private void Awake()
@@ -105,18 +116,35 @@ namespace DataViz
             m_PinnedPointIndex = -1;
         }
 
-        public void SetPointData(List<Vector3> positions, List<Color> colors, float pointSize, List<int> rowIndices = null)
+        public void SetPointData(List<Vector3> positions, List<Color> colors, float pointSize, List<int> rowIndices = null) =>
+            SetPointData(positions, colors, pointSize, rowIndices, null, null);
+
+        /// <summary>
+        /// Points with the frame they were built in (one concatenated buffer over all layers). The
+        /// tooltip then reads the hovered point's own layer, and a pin holds (layer id, row), so it
+        /// survives rebuilds. bufferIndices maps each point to its index in the frame's buffer
+        /// (null = same index, all points handed over).
+        /// </summary>
+        public void SetPointData(List<Vector3> positions, List<Color> colors, float pointSize, List<int> rowIndices,
+                                 PlotFrame frame, List<int> bufferIndices)
         {
-            m_PointPositions = positions;
+            m_PointPositions = positions ?? new List<Vector3>();
             m_PointColors = colors;
             m_PointSize = pointSize;
             m_RowIndices = rowIndices;
+            m_Frame = frame;
+            m_BufferIndices = frame != null ? bufferIndices : null;
+            if (m_IsPinned && m_Frame != null)
+                m_PinnedPointIndex = FindPoint(m_PinnedLayerId, m_PinnedRow);
+            if (m_HoveredPointIndex >= m_PointPositions.Count)
+                m_HoveredPointIndex = -1;
             PointDataVersion++; // [Multiplayer]
         }
 
         /// <summary>
         /// [Multiplayer] Plot-local position of a dataset row if it is currently plotted (used to show
         /// other players' pinned points). Linear search: call it when the row or PointDataVersion changes.
+        /// With several layers this finds the row in any layer; use the layer-id overload.
         /// </summary>
         public bool TryGetRowLocalPosition(int rowIndex, out Vector3 localPosition)
         {
@@ -124,6 +152,63 @@ namespace DataViz
             bool found = pointIndex >= 0 && pointIndex < m_PointPositions.Count;
             localPosition = found ? m_PointPositions[pointIndex] : default;
             return found;
+        }
+
+        /// <summary>
+        /// [Multiplayer] Plot-local position of a layer's dataset row if it is currently plotted and
+        /// hoverable. An empty layerId (or points without a frame) falls back to the row-only lookup.
+        /// </summary>
+        public bool TryGetRowLocalPosition(string layerId, int rowIndex, out Vector3 localPosition)
+        {
+            if (m_Frame == null || string.IsNullOrEmpty(layerId))
+                return TryGetRowLocalPosition(rowIndex, out localPosition);
+
+            int pointIndex = FindPoint(layerId, rowIndex);
+            localPosition = pointIndex >= 0 ? m_PointPositions[pointIndex] : default;
+            return pointIndex >= 0;
+        }
+
+        // Index in the current point list of (layer, row), or -1. Linear over the layer's slice.
+        private int FindPoint(string layerId, int rowIndex)
+        {
+            LayerFrame layerFrame = m_Frame?.Find(layerId);
+            if (layerFrame == null || layerFrame.BufferCount == 0 || rowIndex < 0)
+                return -1;
+
+            int sliceEnd = layerFrame.BufferStart + layerFrame.BufferCount;
+            if (m_BufferIndices == null)
+            {
+                int end = Mathf.Min(sliceEnd, m_PointPositions.Count);
+                for (int i = layerFrame.BufferStart; i < end; i++)
+                {
+                    if (ResolveRowIndex(i) == rowIndex)
+                        return i;
+                }
+                return -1;
+            }
+
+            for (int i = 0; i < m_BufferIndices.Count && i < m_PointPositions.Count; i++)
+            {
+                int buffer = m_BufferIndices[i];
+                if (buffer >= layerFrame.BufferStart && buffer < sliceEnd && ResolveRowIndex(i) == rowIndex)
+                    return i;
+            }
+            return -1;
+        }
+
+        // The layer a point belongs to (null without a frame).
+        private LayerFrame LayerOfPoint(int pointIndex)
+        {
+            if (m_Frame == null || pointIndex < 0)
+                return null;
+            int buffer = pointIndex;
+            if (m_BufferIndices != null)
+            {
+                if (pointIndex >= m_BufferIndices.Count)
+                    return null;
+                buffer = m_BufferIndices[pointIndex];
+            }
+            return m_Frame.FrameOfPoint(buffer);
         }
 
         /// <summary>
@@ -184,6 +269,8 @@ namespace DataViz
             {
                 m_IsPinned = false;
                 m_PinnedPointIndex = -1;
+                m_PinnedLayerId = "";
+                m_PinnedRow = -1;
 
                 if (m_HoveredPointIndex >= 0)
                 {
@@ -201,6 +288,8 @@ namespace DataViz
 
                 m_IsPinned = true;
                 m_PinnedPointIndex = m_HoveredPointIndex;
+                m_PinnedLayerId = LayerOfPoint(m_PinnedPointIndex)?.Layer?.Id ?? "";
+                m_PinnedRow = ResolveRowIndex(m_PinnedPointIndex);
                 ShowDockedTooltip(m_PinnedPointIndex);
             }
 
@@ -214,7 +303,7 @@ namespace DataViz
 
         private void Update()
         {
-            if (m_Visualizer == null || m_PointPositions.Count == 0)
+            if (m_Visualizer == null || (m_PointPositions.Count == 0 && !m_IsPinned))
                 return;
 
             if (m_ResolvedDockAnchor == null)
@@ -239,6 +328,8 @@ namespace DataViz
 
                 m_IsPinned = false;
                 m_PinnedPointIndex = -1;
+                m_PinnedLayerId = "";
+                m_PinnedRow = -1;
                 m_HoveredPointIndex = -1;
                 return;
             }
@@ -251,7 +342,7 @@ namespace DataViz
 
             // We removed the 'if (!m_IsPinned)' here so the aura ALWAYS updates its 
             // position to match the graph, even when pinned!
-            if (indexToShow >= 0)
+            if (indexToShow >= 0 && indexToShow < m_PointPositions.Count)
             {
                 ShowDockedTooltip(indexToShow);
 
@@ -262,11 +353,18 @@ namespace DataViz
                 Vector3 worldPos = transform.TransformPoint(m_PointPositions[indexToShow]);
                 m_ActiveAura.transform.position = worldPos;
 
-                // Make the aura slightly larger than the point, and scale it if the user scales the graph
-                float auraScale = m_PointSize * 3.0f * transform.lossyScale.x;
+                // Make the aura slightly larger than the point (its own layer's size), and scale it if the user scales the graph
+                PlotLayer pointLayer = LayerOfPoint(indexToShow)?.Layer;
+                float auraScale = (pointLayer != null ? pointLayer.PointSize : m_PointSize) * 3.0f * transform.lossyScale.x;
                 m_ActiveAura.transform.localScale = new Vector3(auraScale, auraScale, auraScale);
 
                 m_ActiveAura.SetActive(true);
+            }
+            else if (m_IsPinned && ShowPinnedOffPlot())
+            {
+                // Pinned row is not plotted right now (outside the time window, filtered out of a
+                // subset, layer hidden): keep its tooltip, no aura.
+                if (m_ActiveAura != null) m_ActiveAura.SetActive(false);
             }
             else
             {
@@ -339,33 +437,59 @@ namespace DataViz
         /// </summary>
         private void ShowDockedTooltip(int pointIndex)
         {
-            if (m_Visualizer == null || m_Visualizer.m_Manager == null ||
-                m_Visualizer.m_Manager.LoadedDataset == null)
+            LayerFrame layerFrame = LayerOfPoint(pointIndex);
+            if (m_Frame != null && layerFrame == null)
+                return;
+            ShowTooltipFor(layerFrame?.Layer, layerFrame?.Dataset, ResolveRowIndex(pointIndex));
+        }
+
+        // The pinned (layer, row) from the current stack, when its point is not in the point list.
+        private bool ShowPinnedOffPlot()
+        {
+            if (m_Frame == null || m_Visualizer == null || m_Visualizer.m_Manager == null)
+                return false;
+            PlotLayer layer = m_Visualizer.m_Manager.Stack.Find(m_PinnedLayerId);
+            if (layer == null || layer.Dataset == null || m_PinnedRow < 0 || m_PinnedRow >= layer.Dataset.RowCount)
+                return false;
+            ShowTooltipFor(layer, layer.Dataset, m_PinnedRow);
+            return true;
+        }
+
+        /// <summary>
+        /// Tooltip text for one row of a layer (LFR-19: names the layer when the plot has more than
+        /// one). layer null = points without a frame: the manager's edit layer, as before layers.
+        /// </summary>
+        private void ShowTooltipFor(PlotLayer layer, DatasetColumnar dataset, int rowIndex)
+        {
+            MultiplayerScatterplotManager manager = m_Visualizer != null ? m_Visualizer.m_Manager : null;
+            if (manager == null)
                 return;
 
-            DatasetColumnar dataset = m_Visualizer.m_Manager.LoadedDataset as DatasetColumnar;
-            if (dataset == null)
-            {
-                Debug.LogError("GPUPointInteractable requires DatasetColumnar");
+            if (layer == null)
+                dataset = manager.LoadedDataset;
+            if (dataset == null || rowIndex < 0 || rowIndex >= dataset.RowCount)
                 return;
-            }
 
-            int rowIndex = ResolveRowIndex(pointIndex);
             DatasetRowView row = dataset.GetRow(rowIndex);
 
-            int xCol = m_Visualizer.m_Manager.XColumnIndex;
-            int yCol = m_Visualizer.m_Manager.YColumnIndex;
-            int zCol = m_Visualizer.m_Manager.ZColumnIndex;
-            int colorCol = m_Visualizer.m_Manager.ColorColumnIndex;
+            int xCol = layer != null ? layer.XColumnIndex : manager.XColumnIndex;
+            int yCol = layer != null ? layer.YColumnIndex : manager.YColumnIndex;
+            int zCol = layer != null ? layer.ZColumnIndex : manager.ZColumnIndex;
+            int colorCol = layer != null ? layer.ColorColumnIndex : manager.ColorColumnIndex;
             // Size only counts when it is mapped; Fixed size uses no column.
-            int sizeCol = m_Visualizer.m_Manager.SizeMapped ? m_Visualizer.m_Manager.SizeColumnIndex : -1;
-            int timeCol = m_Visualizer.m_Manager.TimeColumnIndex;
+            bool sizeMapped = layer != null ? layer.SizeMapped : manager.SizeMapped;
+            int sizeCol = sizeMapped ? (layer != null ? layer.SizeColumnIndex : manager.SizeColumnIndex) : -1;
+            int timeCol = layer != null ? layer.TimeColumnIndex : manager.TimeColumnIndex;
+            int glyphCol = layer != null ? layer.GlyphColumnIndex : manager.GlyphColumnIndex;
 
             EnsureTooltipCreated();
 
             if (m_TooltipText != null)
             {
                 string text = $"<b>Row #{rowIndex + 1}</b>{(m_IsPinned ? " <color=#88CCFF>(pinned)</color>" : "")}\n";
+
+                if (layer != null && manager.Layers.Count > 1)
+                    text += $"<color=#CCCCCC>Layer:</color> {layer.Name}\n";
 
                 if (xCol >= 0 && xCol < dataset.ColumnCount)
                     text += $"<color=#FF4444>X ({dataset.Columns[xCol].Name}):</color> {FormatCell(dataset, row, rowIndex, xCol)}\n";
@@ -388,7 +512,10 @@ namespace DataViz
 
                 // One line per active filter (they combine with OR, so a row is dimmed only
                 // when none of them matches).
-                foreach (ScatterplotVisualizer.ActiveFilter filter in m_Visualizer.BuildActiveFilters(dataset))
+                List<ScatterplotVisualizer.ActiveFilter> filters = layer != null
+                    ? m_Visualizer.BuildActiveFilters(layer, dataset)
+                    : m_Visualizer.BuildActiveFilters(dataset);
+                foreach (ScatterplotVisualizer.ActiveFilter filter in filters)
                 {
                     bool matches = m_Visualizer.RowMatchesFilter(dataset, rowIndex, filter);
 
@@ -403,14 +530,15 @@ namespace DataViz
                     text += $"<color=#FFAA44>Filter ({filter.Column.Name}):</color> {FormatCell(dataset, row, rowIndex, filter.ColumnIndex)}{rangesTag}{matchTag}\n";
                 }
 
-                int glyphCol = m_Visualizer.m_Manager.GlyphColumnIndex;
                 if (glyphCol >= 0 && glyphCol < dataset.ColumnCount)
                 {
                     DatasetColumn glyphColumn = dataset.Columns[glyphCol];
                     List<string> glyphCategoryTable = glyphColumn.IsCategorical
                         ? new List<string>(glyphColumn.UniqueValues)
                         : null;
-                    int glyphIndex = m_Visualizer.GetRowGlyph(dataset, rowIndex, glyphCol, glyphColumn, glyphCategoryTable);
+                    int glyphIndex = layer != null
+                        ? m_Visualizer.GetRowGlyph(layer, dataset, rowIndex, glyphCol, glyphColumn, glyphCategoryTable)
+                        : m_Visualizer.GetRowGlyph(dataset, rowIndex, glyphCol, glyphColumn, glyphCategoryTable);
 
                     string glyphName = (glyphIndex >= 0 && glyphIndex < ScatterplotUI.k_GlyphShapeNames.Length)
                         ? ScatterplotUI.k_GlyphShapeNames[glyphIndex]

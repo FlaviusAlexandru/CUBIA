@@ -36,6 +36,10 @@ namespace DataViz
         private GraphicsBuffer m_DataBuffer;
         private int m_ActiveCount;
 
+        // CPU staging array, reused while the point count stays the same (every frame during
+        // playback the whole plot is re-uploaded; allocating 1M structs each time is avoidable).
+        private PointData[] m_Staging;
+
         // Exposed Property IDs matching VFX Graph Exposed Properties
         private static readonly int PointDataBufferID = Shader.PropertyToID("PointDataBuffer");
         private static readonly int PointCountID = Shader.PropertyToID("PointCount");
@@ -59,6 +63,7 @@ namespace DataViz
                 m_VFX.Reinit();
             }
             ReleaseBuffer();
+            m_Staging = null;
         }
 
         /// <summary>
@@ -93,18 +98,21 @@ namespace DataViz
                 return;
             }
 
-            Debug.Log($"[ScatterplotVFXRenderer] Building VFX data for {count} points...");
-
-            // 1. Reallocate GraphicsBuffer if capacity changed or not created yet
-            if (m_DataBuffer == null || m_DataBuffer.count < count)
+            // 1. Reallocate the GraphicsBuffer when the point count changed (or none yet). It is kept
+            // exactly count long, so the graph never sees stale points whatever count it reads.
+            bool countChanged = m_DataBuffer == null || m_DataBuffer.count != count;
+            if (countChanged)
             {
+                Debug.Log($"[ScatterplotVFXRenderer] Building VFX data for {count} points...");
                 ReleaseBuffer();
                 int stride = Marshal.SizeOf<PointData>(); // 11 floats = 44 bytes
                 m_DataBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, count, stride);
             }
 
             // 2. Populate CPU array
-            PointData[] dataArray = new PointData[count];
+            if (m_Staging == null || m_Staging.Length != count)
+                m_Staging = new PointData[count];
+            PointData[] dataArray = m_Staging;
             for (int i = 0; i < count; i++)
             {
                 dataArray[i].position = positions[i];
@@ -131,7 +139,8 @@ namespace DataViz
             // Resets & spawns exact count instantly
             m_VFX.Reinit();
 
-            Debug.Log($"[ScatterplotVFXRenderer] {m_ActiveCount} points uploaded to GPU GraphicsBuffer.");
+            if (countChanged)
+                Debug.Log($"[ScatterplotVFXRenderer] {m_ActiveCount} points uploaded to GPU GraphicsBuffer.");
         }
 
         private void ReleaseBuffer()

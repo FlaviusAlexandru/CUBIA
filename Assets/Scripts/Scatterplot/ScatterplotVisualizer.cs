@@ -136,46 +136,38 @@ namespace DataViz
             if (m_Manager != null) { m_Manager.OnPlotSettingsChanged -= RegeneratePlot; }
         }
 
+        // Points of every layer, kept between builds so playback only rewrites alphas (PlotPointCache).
+        private readonly PlotPointCache m_PointCache = new();
+
+        // Axes, grid, ticks and titles are rebuilt only when what they show changed (not every
+        // playback frame): hash of the titles, tick scales and grid settings they were built from.
+        private int m_AxesSignature;
+        private bool m_AxesBuilt;
+
+        // Last warning logged per layer id, so a warning is logged when it appears or changes, not every frame.
+        private readonly Dictionary<string, string> m_LoggedWarnings = new();
+
         public void RegeneratePlot()
         {
-            ClearPoints();
-            ClearAxes();
-
-            Debug.Log($"[ScatterplotVisualizer] Plot Regeneration Called");
-
             var frame = new PlotFrame();
 
-            if (m_Manager == null || m_Manager.LoadedDataset == null)
+            if (m_Manager == null || m_PointsContainer == null || !HasAnythingToDraw(m_Manager.Stack))
             {
+                ClearPoints();
+                ClearAxes();
+                m_PointCache.Invalidate();
+                if (m_GPUInteractable != null)
+                    m_GPUInteractable.SetPointData(new List<Vector3>(), new List<Color>(), 0f, null, frame, null);
                 PublishFrame(frame, null);
                 return;
             }
 
-            DatasetColumnar dataset = m_Manager.LoadedDataset;
-            int xCol = m_Manager.XColumnIndex;
-            int yCol = m_Manager.YColumnIndex;
-            int zCol = m_Manager.ZColumnIndex;
-            int colorCol = m_Manager.ColorColumnIndex;
-            float pointSize = m_Manager.PointSize;
-
-            // 1. Build Grid and Axes Visuals (from the active layer, as before layers; WP2 moves this to the shared bounds)
-            BuildAxesAndGrid(dataset, xCol, yCol, zCol);
-
-            DatasetColumn colorColumn = dataset.GetColumn(colorCol);
-            if (colorColumn != null)
-            {
-                Debug.Log($"[Color Debug] Col Name: '{colorColumn.Name}' | Index: {colorCol} | Min: {colorColumn.MinValue} | Max: {colorColumn.MaxValue} | IsNumeric: {colorColumn.IsNumeric}");
-            }
-            else
-            {
-                Debug.LogWarning($"[Color Debug] colorColumn is NULL! colorCol index was: {colorCol}");
-            }
-
-            // 2. One concatenated buffer for every visible point layer, in stack order. Each layer's
-            // per-row work is LayerPointBuilder.Append; positions come from the layer's axis frame
-            // (shared bounds, or its own range when Normalised). Rows outside the time window stay
-            // in the buffer at m_TimeOutsideAlpha (pilot finding P4); rows rejected by a value filter
-            // stay at m_FilteredOutAlpha, so row counts/indices stay stable for GPUPointInteractable.
+            // 1. One concatenated buffer for every visible, available point layer, in stack order,
+            // within the shared budget (LFR-06). Positions come from each layer's axis frame (shared
+            // bounds, or its own range when Normalised). Rows outside the time window stay in the
+            // buffer at m_TimeOutsideAlpha (pilot finding P4); rows a dataset layer's filter rejects
+            // stay at m_FilteredOutAlpha. When only the clock, time settings or opacity changed,
+            // the cache rewrites alphas only.
             LayerStack stack = m_Manager.Stack;
             frame.StackVersion = stack.Version;
             frame.Bounds = m_Manager.SharedBounds;
@@ -194,33 +186,27 @@ namespace DataViz
                 GlyphPreviewLayerId = m_Manager.EditLayer.Id,
             };
 
-            var buffers = new PointBuffers();
+            m_PointCache.Build(stack, frame, settings);
+            PointBuffers buffers = m_PointCache.Buffers;
+            if (!m_PointCache.LastBuildRetimed)
+                Debug.Log($"[ScatterplotVisualizer] Plot Regeneration Called");
+
+            // 2. Grid, axes, ticks and titles from the shared bounds (only when they changed).
+            BuildAxesIfChanged(stack, frame);
+
             bool anyTimeActive = false;
             bool anySizeMapped = false;
-            foreach (PlotLayer layer in stack.Layers)
+            foreach (LayerFrame layerFrame in frame.Layers)
             {
-                var layerFrame = new LayerFrame
-                {
-                    Layer = layer,
-                    Dataset = layer.Kind == LayerKind.Computed ? (stack.Find(layer.SourceLayerId) ?? layer).Dataset : layer.Dataset,
-                    Axes = LayerBounds.FrameInStack(layer, stack, frame.Bounds),
-                };
-                frame.Layers.Add(layerFrame);
-
-                if (!layer.Visible || !layer.IsPointLayer || layer.LocalUnavailable || layer.Dataset == null)
+                if (layerFrame.BufferCount == 0)
                     continue;
-
-                layerFrame.BufferStart = buffers.Count;
-                layerFrame.Info = LayerPointBuilder.Append(layer, stack, layerFrame.Axes, frame.Budget - buffers.Count,
-                    frame.ClockActive, frame.ClockMin, frame.ClockMax, frame.ClockTime, settings, buffers);
-                layerFrame.BufferCount = buffers.Count - layerFrame.BufferStart;
-
+                PlotLayer layer = layerFrame.Layer;
                 DatasetColumn layerTime = layer.Dataset.GetColumn(layer.TimeColumnIndex);
                 anyTimeActive |= frame.ClockActive && layerTime != null && layerTime.IsNumeric;
                 anySizeMapped |= layer.SizeMapped && layer.Dataset.GetColumn(layer.SizeColumnIndex) is DatasetColumn sizeColumn && sizeColumn.IsNumeric;
             }
-            frame.TotalPoints = buffers.Count;
 
+            float pointSize = m_Manager.PointSize;
             m_GPUPoints.BuildAdvanced(
                 buffers.Positions,
                 buffers.Colors,
@@ -228,7 +214,7 @@ namespace DataViz
                 null, // glossiness - not yet exposed as a mapped dimension
                 null, // metallic - not yet exposed as a mapped dimension
                 buffers.Glyphs,
-                buffers.Sizes // per point; equals pointSize everywhere in Fixed size mode
+                buffers.Sizes // per point: each layer's own size
             );
 
             LastBuiltPositions = buffers.Positions;
@@ -238,9 +224,9 @@ namespace DataViz
             LastBuiltColors = buffers.Colors;
             LastBuiltInTimeWindow = anyTimeActive ? buffers.InTimeWindow : null;
 
-            // Also update the interactable with point data. While a time column is set it only gets
-            // the rows inside the time window, so the faded context rows can't be hovered/tooltipped
-            // (as before, when they were not drawn at all).
+            // 3. The interactable gets the points with the frame, so a tooltip reads the hovered
+            // point's own layer. While a time column is set it only gets the rows inside the time
+            // window, so the faded context rows can't be hovered/tooltipped.
             if (m_GPUInteractable != null)
             {
                 if (anyTimeActive)
@@ -248,6 +234,7 @@ namespace DataViz
                     m_HoverPositions.Clear();
                     m_HoverColors.Clear();
                     m_HoverRowIndices.Clear();
+                    m_HoverBufferIndices.Clear();
                     for (int i = 0; i < buffers.Count; i++)
                     {
                         if (!buffers.InTimeWindow[i])
@@ -255,16 +242,53 @@ namespace DataViz
                         m_HoverPositions.Add(buffers.Positions[i]);
                         m_HoverColors.Add(buffers.Colors[i]);
                         m_HoverRowIndices.Add(buffers.Rows[i]);
+                        m_HoverBufferIndices.Add(i);
                     }
-                    m_GPUInteractable.SetPointData(m_HoverPositions, m_HoverColors, pointSize, m_HoverRowIndices);
+                    m_GPUInteractable.SetPointData(m_HoverPositions, m_HoverColors, pointSize, m_HoverRowIndices, frame, m_HoverBufferIndices);
                 }
                 else
                 {
-                    m_GPUInteractable.SetPointData(buffers.Positions, buffers.Colors, pointSize, buffers.Rows);
+                    m_GPUInteractable.SetPointData(buffers.Positions, buffers.Colors, pointSize, buffers.Rows, frame, null);
                 }
             }
 
+            LogWarnings(frame);
             PublishFrame(frame, buffers);
+        }
+
+        // True when some layer has data this peer can show (a point layer, or a computed layer's source).
+        private static bool HasAnythingToDraw(LayerStack stack)
+        {
+            foreach (PlotLayer layer in stack.Layers)
+            {
+                if (layer.LocalUnavailable)
+                    continue;
+                DatasetColumnar dataset = layer.Kind == LayerKind.Computed
+                    ? (stack.Find(layer.SourceLayerId) ?? layer).Dataset
+                    : layer.Dataset;
+                if (dataset != null)
+                    return true;
+            }
+            return false;
+        }
+
+        private void LogWarnings(PlotFrame frame)
+        {
+            foreach (LayerFrame layerFrame in frame.Layers)
+            {
+                string id = layerFrame.Layer.Id ?? "";
+                string warning = layerFrame.Info.Warning;
+                m_LoggedWarnings.TryGetValue(id, out string logged);
+                if (warning == logged)
+                    continue;
+                if (warning == null)
+                    m_LoggedWarnings.Remove(id);
+                else
+                {
+                    m_LoggedWarnings[id] = warning;
+                    Debug.LogWarning("[ScatterplotVisualizer] " + warning);
+                }
+            }
         }
 
         private void PublishFrame(PlotFrame frame, PointBuffers buffers)
@@ -292,7 +316,8 @@ namespace DataViz
 
         /// <summary>
         /// What the last RegeneratePlot built: bounds, clock, and per layer its axis frame, buffer
-        /// slice and draw info. Never null after Start (an empty frame when nothing is loaded).
+        /// slice and draw info (Info.Warning: skipped rows, down-sampling). Never null after Start
+        /// (an empty frame when nothing is loaded).
         /// </summary>
         public PlotFrame LastFrame { get; private set; } = new PlotFrame();
 
@@ -308,8 +333,96 @@ namespace DataViz
             return origin + unit * m_AxisLength;
         }
 
+        /// <summary>
+        /// The scale an axis' ticks and range show: the shared bounds; if no aligned layer maps the
+        /// axis, the first visible drawn layer's own (normalised) scale; else not mapped.
+        /// </summary>
+        private static AxisScale TickScale(PlotFrame frame, int axis)
+        {
+            AxisScale shared = frame.Bounds.Get(axis);
+            if (shared.Mapped)
+                return shared;
+            foreach (LayerFrame layerFrame in frame.Layers)
+            {
+                if (!PlotPointCache.Draws(layerFrame.Layer))
+                    continue;
+                AxisScale own = layerFrame.Axes.Get(axis);
+                if (own.Mapped)
+                    return own;
+            }
+            return new AxisScale();
+        }
 
-        private void BuildAxesAndGrid(DatasetColumnar dataset, int xCol, int yCol, int zCol)
+        /// <summary>
+        /// LFR-07 axis title: one line "column  [min to max]" as before layers when every visible
+        /// layer maps the same column (aligned); otherwise one "Layer name: column" line per layer
+        /// (LayerBounds.AxisTitleLines) and the range of scale on a last line. Null when no visible
+        /// layer maps the axis. lineCount: lines in the result.
+        /// </summary>
+        public static string AxisTitle(IReadOnlyList<PlotLayer> layers, int axis, AxisScale scale, out int lineCount)
+        {
+            List<string> lines = LayerBounds.AxisTitleLines(layers, axis);
+            lineCount = 0;
+            if (lines == null || lines.Count == 0)
+                return null;
+
+            string range = !scale.Mapped ? null
+                : scale.Categorical ? $"[{scale.Categories?.Length ?? 0} cats]"
+                : $"[{scale.Min:F1} to {scale.Max:F1}]";
+
+            if (lines.Count == 1)
+            {
+                lineCount = 1;
+                return range != null ? $"{lines[0]}  {range}" : lines[0];
+            }
+
+            lineCount = lines.Count + (range != null ? 1 : 0);
+            return string.Join("\n", lines) + (range != null ? "\n" + range : "");
+        }
+
+        private void BuildAxesIfChanged(LayerStack stack, PlotFrame frame)
+        {
+            var titles = new string[3];
+            var lineCounts = new int[3];
+            var scales = new AxisScale[3];
+            var h = new System.HashCode();
+            for (int axis = 0; axis < 3; axis++)
+            {
+                scales[axis] = TickScale(frame, axis);
+                titles[axis] = AxisTitle(stack.Layers, axis, scales[axis], out lineCounts[axis]);
+                h.Add(titles[axis] ?? "");
+                h.Add(scales[axis].Mapped);
+                h.Add(scales[axis].Categorical);
+                h.Add(scales[axis].Min);
+                h.Add(scales[axis].Max);
+                // By reference: the shared bounds and category tables keep their arrays while unchanged.
+                h.Add(scales[axis].Categories != null ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(scales[axis].Categories) : 0);
+            }
+            h.Add(m_AxisLength);
+            h.Add(m_AxisLabelFontSize);
+            h.Add(m_AxisLabelOffset);
+            h.Add(m_TickLabelOffset);
+            if (m_GridSettings != null)
+            {
+                h.Add(m_GridSettings.ShowGridPlanes);
+                h.Add(m_GridSettings.ShowTickMarks);
+                h.Add(m_GridSettings.ShowValueLabels);
+                h.Add(m_GridSettings.MajorGridSpacing);
+                h.Add(m_GridSettings.MinorGridSpacing);
+                h.Add(m_GridSettings.MajorGridColor);
+                h.Add(m_GridSettings.MinorGridColor);
+            }
+            int signature = h.ToHashCode();
+            if (m_AxesBuilt && signature == m_AxesSignature && m_ActiveAxes.Count > 0)
+                return;
+
+            ClearAxes();
+            BuildAxesAndGrid(scales, titles, lineCounts);
+            m_AxesSignature = signature;
+            m_AxesBuilt = true;
+        }
+
+        private void BuildAxesAndGrid(AxisScale[] scales, string[] titles, int[] lineCounts)
         {
             // Build X, Y, Z Axis cylinders
             CreateAxisLine(Vector3.zero, new Vector3(m_AxisLength, 0, 0), Color.red, "X-Axis");
@@ -328,11 +441,7 @@ namespace DataViz
             }
             if (m_GridSettings != null && m_GridSettings.ShowValueLabels)
             {
-                CreateTickLabels(
-                    dataset,
-                    xCol,
-                    yCol,
-                    zCol);
+                CreateTickLabels(scales);
             }
 
 
@@ -351,16 +460,22 @@ namespace DataViz
 
             // Axis labels: names and ranges, laid along each axis. X and Z lie flat on
             // the plot's floor (just above y = 0) so they never sink into the table;
-            // Y stands upright and reads bottom-to-top beside the Y axis.
-            if (xCol >= 0 && xCol < dataset.ColumnCount)
-                CreateAxisLabel(dataset.Columns[xCol], new Vector3(m_AxisLength / 2f, k_FloorLift, -m_AxisLabelOffset), k_FlatAlongX, "X_Label");
+            // Y stands upright and reads bottom-to-top beside the Y axis. A title with several
+            // lines (LFR-07) moves outward by half its extra height, so it never reaches the ticks.
+            if (titles[0] != null)
+                CreateAxisLabel(titles[0], lineCounts[0], new Vector3(m_AxisLength / 2f, k_FloorLift, -m_AxisLabelOffset - ExtraTitleOffset(lineCounts[0])), k_FlatAlongX, "X_Label");
 
-            if (yCol >= 0 && yCol < dataset.ColumnCount)
-                CreateAxisLabel(dataset.Columns[yCol], new Vector3(-m_AxisLabelOffset, m_AxisLength / 2f, 0), k_UprightAlongY, "Y_Label");
+            if (titles[1] != null)
+                CreateAxisLabel(titles[1], lineCounts[1], new Vector3(-m_AxisLabelOffset - ExtraTitleOffset(lineCounts[1]), m_AxisLength / 2f, 0), k_UprightAlongY, "Y_Label");
 
-            if (zCol >= 0 && zCol < dataset.ColumnCount)
-                CreateAxisLabel(dataset.Columns[zCol], new Vector3(-m_AxisLabelOffset, k_FloorLift, m_AxisLength / 2f), k_FlatAlongZ, "Z_Label");
+            if (titles[2] != null)
+                CreateAxisLabel(titles[2], lineCounts[2], new Vector3(-m_AxisLabelOffset - ExtraTitleOffset(lineCounts[2]), k_FloorLift, m_AxisLength / 2f), k_FlatAlongZ, "Z_Label");
         }
+
+        // Approximate height of one title line in plot units (TextMeshPro: about fontSize / 10
+        // units per line, times the label's 0.03 scale), half of it per extra line.
+        private float ExtraTitleOffset(int lineCount) =>
+            lineCount <= 1 ? 0f : (lineCount - 1) * 0.5f * m_AxisLabelFontSize * 0.1f * 0.03f;
 
 
         private void CreateGridPlaneXY()
@@ -546,93 +661,49 @@ namespace DataViz
             m_ActiveAxes.Add(labelObj);
         }
 
-        private void CreateTickLabels(
-            DatasetColumnar dataset,
-            int xCol,
-            int yCol,
-            int zCol)
+        private void CreateTickLabels(AxisScale[] scales)
         {
             float spacing =
                 m_GridSettings.MajorGridSpacing;
 
             // X axis labels
-            if (xCol >= 0 && xCol < dataset.ColumnCount)
-            {
-                DatasetColumn col =
-                    dataset.Columns[xCol];
-
-                for (float x = 0; x <= m_AxisLength; x += spacing)
-                {
-                    float value =
-                        col.MinValue +
-                        (x / m_AxisLength) *
-                        (col.MaxValue - col.MinValue);
-
-                    Debug.Log($"[ScatterplotVisualizer] X Axis: {col.Name} | Min={col.MinValue} | Max={col.MaxValue}");
-
-                    CreateTickLabel(
-                        value.ToString("F1"),
-                        new Vector3(
-                            x,
-                            k_FloorLift,
-                            -m_TickLabelOffset
-                        ),
-                        k_FlatAlongX
-                    );
-                }
-            }
+            CreateAxisTickLabels(scales[0], spacing, x => new Vector3(x, k_FloorLift, -m_TickLabelOffset), k_FlatAlongX);
 
             // Y axis labels
-            if (yCol >= 0 && yCol < dataset.ColumnCount)
-            {
-                DatasetColumn col =
-                    dataset.Columns[yCol];
-
-                for (float y = 0; y <= m_AxisLength; y += spacing)
-                {
-                    float value =
-                        col.MinValue +
-                        (y / m_AxisLength) *
-                        (col.MaxValue - col.MinValue);
-
-                    Debug.Log($"[ScatterplotVisualizer] Y Axis: {col.Name} | Min={col.MinValue} | Max={col.MaxValue}");
-
-                    CreateTickLabel(
-                        value.ToString("F1"),
-                        new Vector3(
-                            -0.05f,
-                            y,
-                            0
-                        ),
-                        Quaternion.identity
-                    );
-                }
-            }
+            CreateAxisTickLabels(scales[1], spacing, y => new Vector3(-0.05f, y, 0), Quaternion.identity);
 
             // Z axis labels
-            if (zCol >= 0 && zCol < dataset.ColumnCount)
+            CreateAxisTickLabels(scales[2], spacing, z => new Vector3(-m_TickLabelOffset, k_FloorLift, z), k_FlatAlongZ);
+        }
+
+        // Numeric: the scale's value at each major grid line (with one aligned layer, the column's
+        // range as before). Categorical: the category nearest each grid line, each name once.
+        private void CreateAxisTickLabels(AxisScale scale, float spacing, System.Func<float, Vector3> position, Quaternion rotation)
+        {
+            if (!scale.Mapped)
+                return;
+
+            string previous = null;
+            for (float u = 0; u <= m_AxisLength; u += spacing)
             {
-                DatasetColumn col =
-                    dataset.Columns[zCol];
-
-                for (float z = 0; z <= m_AxisLength; z += spacing)
+                float unit = u / m_AxisLength;
+                string text;
+                if (scale.Categorical)
                 {
-                    float value =
-                        col.MinValue +
-                        (z / m_AxisLength) *
-                        (col.MaxValue - col.MinValue);
-                    Debug.Log($"[ScatterplotVisualizer] Z Axis: {col.Name} | Min={col.MinValue} | Max={col.MaxValue}");
-
-                    CreateTickLabel(
-                        value.ToString("F1"),
-                        new Vector3(
-                            -m_TickLabelOffset,
-                            k_FloorLift,
-                            z
-                        ),
-                        k_FlatAlongZ
-                    );
+                    int count = scale.Categories?.Length ?? 0;
+                    if (count == 0)
+                        return;
+                    text = scale.Categories[Mathf.Clamp(Mathf.RoundToInt(unit * (count - 1)), 0, count - 1)];
+                    if (text == previous)
+                        continue;
+                    previous = text;
                 }
+                else
+                {
+                    text = scale.ValueAt(unit).ToString("F1");
+                }
+
+                CreateTickLabel(text, position(u), rotation);
             }
         }
 
@@ -691,7 +762,7 @@ namespace DataViz
             m_ActiveAxes.Add(lineObj);
         }
 
-        private void CreateAxisLabel(DatasetColumn column, Vector3 position, Quaternion rotation, string name)
+        private void CreateAxisLabel(string text, int lineCount, Vector3 position, Quaternion rotation, string name)
         {
             GameObject labelObj = new GameObject(name);
             labelObj.transform.SetParent(m_AxesContainer, false);
@@ -708,18 +779,11 @@ namespace DataViz
             tmpText.fontStyle = FontStyles.Bold;
             tmpText.alignment = TextAlignmentOptions.Center;
             tmpText.color = Color.white;
-            // One line along the axis: no wrapping, and a rect as long as the axis.
+            // Lines along the axis: no wrapping, and a rect as long as the axis (one line per
+            // layer when layers map different columns, LFR-07).
             tmpText.textWrappingMode = TextWrappingModes.NoWrap;
-            tmpText.rectTransform.sizeDelta = new Vector2(m_AxisLength / 0.03f, 4f);
-
-            if (column.IsNumeric)
-            {
-                tmpText.text = $"{column.Name}  [{column.MinValue:F1} to {column.MaxValue:F1}]";
-            }
-            else
-            {
-                tmpText.text = $"{column.Name}  [{column.UniqueCount} cats]";
-            }
+            tmpText.rectTransform.sizeDelta = new Vector2(m_AxisLength / 0.03f, 4f * Mathf.Max(1, lineCount));
+            tmpText.text = text;
 
             m_ActiveAxes.Add(labelObj);
         }
@@ -777,6 +841,7 @@ namespace DataViz
         private readonly List<Vector3> m_HoverPositions = new();
         private readonly List<Color> m_HoverColors = new();
         private readonly List<int> m_HoverRowIndices = new();
+        private readonly List<int> m_HoverBufferIndices = new();
 
         /// <summary>
         /// Glyph for dataset row rowIndex on the edit layer's glyph column: per-value assignment,
@@ -798,7 +863,7 @@ namespace DataViz
             return m_Manager.GetGlyphForRow(label, hasValue, numericValue, 0);
         }
 
-        /// <summary>GetRowGlyph for a given layer (its glyph assignments and ranges, fallback glyph 0).</summary>
+        /// <summary>GetRowGlyph for a given layer (its glyph assignments and ranges, fallback the layer's DefaultGlyph, as drawn).</summary>
         public int GetRowGlyph(
             PlotLayer layer,
             DatasetColumnar dataset,
@@ -806,7 +871,7 @@ namespace DataViz
             int glyphCol,
             DatasetColumn glyphColumn,
             List<string> categoryTable) =>
-            LayerPointBuilder.RowGlyph(layer, dataset, rowIndex, glyphCol, glyphColumn, categoryTable, 0);
+            LayerPointBuilder.RowGlyph(layer, dataset, rowIndex, glyphCol, glyphColumn, categoryTable, layer.DefaultGlyph);
 
         // Glyph-column value intervals (x = low, y = high, both inclusive) hidden by the glyph
         // range editor's overlap preview. Empty = no preview.
@@ -862,8 +927,9 @@ namespace DataViz
             LayerRows.PassesFilters(dataset, rowIndex, filters);
 
         /// <summary>
-        /// Mapped size for one row: baseSize x lerp(SizeMappedMinScale, SizeMappedMaxScale, normalised
-        /// value), so the column's largest value draws biggest. Rows with no value keep baseSize.
+        /// Mapped size for one row: baseSize x lerp(SizeMappedMinScale, SizeMappedMaxScale, value
+        /// normalised over the rows with a value), so the column's largest value draws biggest.
+        /// Rows with no value keep baseSize (the plot skips them, LFR-11).
         /// </summary>
         public float GetMappedPointSize(DatasetColumnar dataset, int rowIndex, int sizeCol, float baseSize) =>
             LayerPointBuilder.MappedPointSize(dataset, rowIndex, sizeCol, baseSize);

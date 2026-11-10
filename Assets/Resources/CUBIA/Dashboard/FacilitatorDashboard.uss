@@ -164,6 +164,79 @@
     width: auto;
 }
 
+/* ---------------------------------------------------------------- range sliders (DashboardRangeEditor) */
+
+.dash-ranges {
+    margin: 4px 2px 0 2px;
+    padding: 4px 6px;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.dash-ranges__title {
+    font-size: 13px;
+    color: rgb(196, 201, 210);
+}
+
+.dash-range-row {
+    margin-top: 4px;
+    padding: 2px 4px 4px 4px;
+    border-radius: 3px;
+    border-left-width: 3px;
+    border-left-color: rgb(95, 214, 200);
+    background-color: rgba(38, 42, 50, 0.7);
+}
+
+.dash-range-row--overlap {
+    border-left-color: rgb(240, 64, 64);
+    background-color: rgba(90, 24, 24, 0.7);
+}
+
+.dash-root .dash-range-row__shape {
+    width: 140px;
+    min-width: 140px;
+    flex-shrink: 0;
+}
+
+.dash-root .dash-range-row__shape .unity-base-field__label {
+    display: none;
+}
+
+.dash-range-row__values {
+    margin-left: 6px;
+    font-size: 13px;
+    color: rgb(230, 232, 236);
+}
+
+.dash-root .dash-range-row__remove {
+    min-width: 24px;
+    padding: 0 6px;
+}
+
+.dash-root .dash-range-row__slider {
+    margin: 2px 4px 0 4px;
+}
+
+.dash-root .dash-range-row__slider .unity-min-max-slider__dragger {
+    background-color: rgb(95, 214, 200);
+}
+
+.dash-root .dash-range-row--overlap .unity-min-max-slider__dragger {
+    background-color: rgb(240, 64, 64);
+}
+
+.dash-root .dash-range-row__slider .unity-min-max-slider__min-thumb,
+.dash-root .dash-range-row__slider .unity-min-max-slider__max-thumb {
+    background-color: rgb(236, 238, 242);
+}
+
+.dash-ranges__warning {
+    margin: 2px 3px;
+    font-size: 13px;
+    white-space: normal;
+    color: rgb(255, 130, 130);
+}
+
 /* ---------------------------------------------------------------- buttons */
 
 .dash-root .unity-button {

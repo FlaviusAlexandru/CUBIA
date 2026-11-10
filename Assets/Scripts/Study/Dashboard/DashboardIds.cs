@@ -47,11 +47,13 @@ namespace DataViz.Study
         // Glyph assignment
         public const string GlyphLabelDropdown = "glyph-label";    // DropdownField (labels of glyph column)
         public const string GlyphShapeDropdown = "glyph-shape";    // DropdownField (ScatterplotUI.k_GlyphShapeNames)
+        public const string GlyphRanges = "glyph-ranges";          // VisualElement (DashboardRangeEditor builds the range sliders in it)
 
         // Filters (first filter entry; matches the VR menu's single filter row)
         public const string FilterColumnDropdown = "filter-column"; // "None" + columns
         public const string FilterValueDropdown = "filter-value";   // "Any value" + values of that column
         public const string FilterClear = "filter-clear";           // Button
+        public const string FilterRanges = "filter-ranges";         // VisualElement (DashboardRangeEditor builds the range sliders in it)
 
         // Time
         public const string TimeScrubSlider = "time-scrub";        // Slider 0..1

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using DataViz.Networking;
+using UnityEngine;
 
 namespace DataViz.Study
 {
@@ -35,6 +36,7 @@ namespace DataViz.Study
         const float k_PointSizeEpsilon = 1e-4f;
         internal const string AnyValue = "Any value";
         static readonly CultureInfo k_Inv = CultureInfo.InvariantCulture;
+        static readonly LayerSnapshot k_NoLayer = new LayerSnapshot(); // read-only stand-in for an empty plot
 
         /// <summary>True when anything other than the ignored fields differs.</summary>
         public static bool HasRelevantChange(PlotSnapshot a, PlotSnapshot b)
@@ -60,7 +62,7 @@ namespace DataViz.Study
                    Math.Abs(a.PlaybackRate - b.PlaybackRate) > 1e-4f;
         }
 
-        /// <summary>One entry per named change; empty when nothing relevant changed.</summary>
+        /// <summary>One entry per named change; empty when nothing relevant changed. Compares the two active layers and playback.</summary>
         public static List<(string action, string oldValue, string newValue)> Describe(
             PlotSnapshot before, PlotSnapshot after, DatasetColumnar dataset)
         {
@@ -75,6 +77,14 @@ namespace DataViz.Study
                 return result;
             }
 
+            DescribeMapping(result, before.ActiveLayer ?? k_NoLayer, after.ActiveLayer ?? k_NoLayer, dataset);
+            DescribePlayback(result, before, after);
+            return result;
+        }
+
+        // The settings the pre-layer plot had, in the pre-layer row order.
+        static void DescribeMapping(List<(string, string, string)> result, LayerSnapshot before, LayerSnapshot after, DatasetColumnar dataset)
+        {
             AddColumn(result, StudyActions.SetX, before.XColumn, after.XColumn, dataset);
             AddColumn(result, StudyActions.SetY, before.YColumn, after.YColumn, dataset);
             AddColumn(result, StudyActions.SetZ, before.ZColumn, after.ZColumn, dataset);
@@ -91,28 +101,33 @@ namespace DataViz.Study
 
             DescribeGlyphs(result, before, after, dataset);
             DescribeFilters(result, before, after, dataset);
+        }
 
+        static void DescribePlayback(List<(string, string, string)> result, PlotSnapshot before, PlotSnapshot after)
+        {
             if (Math.Abs(before.PlaybackRate - after.PlaybackRate) > 1e-4f)
                 result.Add((StudyActions.SetPlaybackRate,
                     before.PlaybackRate.ToString("0.##", k_Inv), after.PlaybackRate.ToString("0.##", k_Inv)));
 
             if (before.IsPlaying != after.IsPlaying)
                 result.Add(after.IsPlaying ? (StudyActions.Play, "", "") : (StudyActions.Pause, "", ""));
-
-            return result;
         }
 
         // ---- layer stacks -------------------------------------------------------------------
 
         /// <summary>
-        /// Names what changed between two layer stacks. Layers are matched by Id. A dataset load
-        /// (the active layer's DatasetName changed while it kept its id, or the whole stack was
-        /// replaced) is the single LoadDataset row, as before layers. Otherwise: RemoveLayer and
-        /// AddLayer rows, SelectLayer when the active layer changed, the field changes of the active
-        /// layer (the legacy Describe, tagged with that layer's name), and plot-level rows (Play,
-        /// Pause, SetPlaybackRate) with an empty Layer. datasetOf resolves a dataset file name to
-        /// its loaded dataset for column names (may return null).
-        /// WP1 body: changes on non-active layers other than add/remove are not named yet (WP7).
+        /// Names what changed between two layer stacks, one LayerChange per log row. Layers are
+        /// matched by Id; Layer is the layer's Name after the change ("" for plot-level rows).
+        /// Order: a dataset load that leaves one layer with a new dataset (RequestLoadDatasetRpc,
+        /// "new plot") is the single LoadDataset row with an empty Layer, as before layers.
+        /// Otherwise RemoveLayer, AddLayer / DuplicateLayer, ReorderLayer (1-based positions),
+        /// SelectLayer (names), then per remaining layer in stack order: RenameLayer, the pre-layer
+        /// mapping rows (SetX … filters), the layer-only rows, and last the plot-level rows (Play,
+        /// Pause, SetPlaybackRate). SelectLayer is left out when the active layer changed only
+        /// because it was added or the old one was removed. Column names come from each layer's own
+        /// dataset (a computed layer: its source's, or its frozen one). datasetOf resolves a
+        /// dataset file name to the loaded dataset and may return null (columns are then "#index").
+        /// Identical stacks and scrub-only changes give an empty list.
         /// </summary>
         public static List<LayerChange> DescribeStack(PlotSnapshot before, PlotSnapshot after, Func<string, DatasetColumnar> datasetOf)
         {
@@ -120,65 +135,239 @@ namespace DataViz.Study
             if (before == null || after == null)
                 return result;
 
+            LayerSnapshot[] oldLayers = before.Layers ?? Array.Empty<LayerSnapshot>();
+            LayerSnapshot[] newLayers = after.Layers ?? Array.Empty<LayerSnapshot>();
             LayerSnapshot activeBefore = before.ActiveLayer;
             LayerSnapshot activeAfter = after.ActiveLayer;
-            bool sameActive = activeBefore != null && activeAfter != null && activeBefore.Id == activeAfter.Id;
-            DatasetColumnar dataset = activeAfter != null ? datasetOf?.Invoke(activeAfter.DatasetName) : null;
 
-            if ((sameActive || activeBefore == null || activeAfter == null) &&
-                (before.DatasetName ?? "") != (after.DatasetName ?? "") &&
-                (sameActive || !SharesAnyId(before, after)))
+            if (IsStackLoad(before, after, activeBefore, activeAfter, out string loadedFrom))
             {
-                result.Add(new LayerChange("", StudyActions.LoadDataset, before.DatasetName ?? "", after.DatasetName ?? ""));
+                result.Add(new LayerChange("", StudyActions.LoadDataset, loadedFrom, after.DatasetName ?? ""));
                 return result;
             }
 
-            foreach (LayerSnapshot old in before.Layers ?? Array.Empty<LayerSnapshot>())
+            foreach (LayerSnapshot old in oldLayers)
             {
                 if (old != null && after.FindLayer(old.Id) == null)
                     result.Add(new LayerChange(old.Name, StudyActions.RemoveLayer, LayerKindText(before, old), ""));
             }
 
-            foreach (LayerSnapshot added in after.Layers ?? Array.Empty<LayerSnapshot>())
+            for (int i = 0; i < newLayers.Length; i++)
             {
-                if (added != null && before.FindLayer(added.Id) == null)
+                LayerSnapshot added = newLayers[i];
+                if (added == null || before.FindLayer(added.Id) != null)
+                    continue;
+                LayerSnapshot original = DuplicateSource(before, newLayers, i);
+                if (original != null)
+                    result.Add(new LayerChange(added.Name, StudyActions.DuplicateLayer, original.Name, added.Name));
+                else
                     result.Add(new LayerChange(added.Name, StudyActions.AddLayer, "", LayerKindText(after, added)));
             }
 
-            if (sameActive)
+            DescribeOrder(result, before, after, activeAfter);
+
+            // A new layer becomes active, and removing the active layer activates a neighbour: both
+            // are already named by the Add/Remove row, so only a real selection gets its own row.
+            if (activeBefore != null && activeAfter != null && activeBefore.Id != activeAfter.Id &&
+                after.FindLayer(activeBefore.Id) != null && before.FindLayer(activeAfter.Id) != null)
+                result.Add(new LayerChange(activeAfter.Name, StudyActions.SelectLayer, activeBefore.Name, activeAfter.Name));
+
+            var rows = new List<(string action, string oldValue, string newValue)>();
+            foreach (LayerSnapshot now in newLayers)
             {
-                foreach (var change in Describe(before, after, dataset))
-                {
-                    string layer = IsPlotLevel(change.action) ? "" : activeAfter.Name;
-                    result.Add(new LayerChange(layer, change.action, change.oldValue, change.newValue));
-                }
-                return result;
+                LayerSnapshot was = now != null ? before.FindLayer(now.Id) : null;
+                if (was == null)
+                    continue;
+                rows.Clear();
+                DescribeLayer(rows, after, was, now, datasetOf);
+                foreach (var row in rows)
+                    result.Add(new LayerChange(now.Name, row.action, row.oldValue, row.newValue));
             }
 
-            if ((activeBefore?.Id ?? "") != (activeAfter?.Id ?? ""))
-                result.Add(new LayerChange(activeAfter?.Name ?? "", StudyActions.SelectLayer, activeBefore?.Name ?? "", activeAfter?.Name ?? ""));
-
-            if (Math.Abs(before.PlaybackRate - after.PlaybackRate) > 1e-4f)
-                result.Add(new LayerChange("", StudyActions.SetPlaybackRate,
-                    before.PlaybackRate.ToString("0.##", k_Inv), after.PlaybackRate.ToString("0.##", k_Inv)));
-            if (before.IsPlaying != after.IsPlaying)
-                result.Add(new LayerChange("", after.IsPlaying ? StudyActions.Play : StudyActions.Pause, "", ""));
+            rows.Clear();
+            DescribePlayback(rows, before, after);
+            foreach (var row in rows)
+                result.Add(new LayerChange("", row.action, row.oldValue, row.newValue));
             return result;
         }
 
-        static bool IsPlotLevel(string action) =>
-            action == StudyActions.Play || action == StudyActions.Pause || action == StudyActions.SetPlaybackRate ||
-            action == StudyActions.Scrub || action == StudyActions.LoadDataset;
-
-        static bool SharesAnyId(PlotSnapshot a, PlotSnapshot b)
+        // "New plot" (RequestLoadDatasetRpc): one point layer is left and it is a fresh layer or its
+        // dataset changed. Removing layers down to one whose dataset is unchanged, or a computed
+        // layer frozen by its source's removal, is not a load. from = the kept layer's old dataset
+        // (the active one's when the stack was replaced).
+        static bool IsStackLoad(PlotSnapshot before, PlotSnapshot after, LayerSnapshot activeBefore, LayerSnapshot activeAfter, out string from)
         {
-            foreach (LayerSnapshot l in a.Layers ?? Array.Empty<LayerSnapshot>())
-            {
-                if (l != null && b.FindLayer(l.Id) != null)
-                    return true;
-            }
-            return false;
+            from = before.DatasetName ?? "";
+            if (activeBefore == null || activeAfter == null || Len(after.Layers) != 1 ||
+                (LayerKind)activeAfter.Kind == LayerKind.Computed)
+                return false;
+            LayerSnapshot kept = before.FindLayer(activeAfter.Id);
+            if (kept == null)
+                return true;
+            from = kept.DatasetName ?? "";
+            return from != (activeAfter.DatasetName ?? "");
         }
+
+        // LayerStack.Duplicate inserts "<name> copy" (made unique) right after the original with the
+        // same settings. Returns the original as it was before, or null when layers[index] is not one.
+        static LayerSnapshot DuplicateSource(PlotSnapshot before, LayerSnapshot[] layers, int index)
+        {
+            if (index <= 0 || layers[index - 1] == null)
+                return null;
+            LayerSnapshot copy = layers[index];
+            LayerSnapshot original = before.FindLayer(layers[index - 1].Id);
+            if (original == null || !(copy.Name ?? "").StartsWith((original.Name ?? "") + " copy", StringComparison.Ordinal))
+                return null;
+            return SettingsDiffer(original, copy) ? null : original;
+        }
+
+        static void DescribeOrder(List<LayerChange> result, PlotSnapshot before, PlotSnapshot after, LayerSnapshot activeAfter)
+        {
+            var oldOrder = new List<string>();
+            foreach (LayerSnapshot l in before.Layers ?? Array.Empty<LayerSnapshot>())
+                if (l != null && after.FindLayer(l.Id) != null) oldOrder.Add(l.Id);
+            var newOrder = new List<string>();
+            foreach (LayerSnapshot l in after.Layers ?? Array.Empty<LayerSnapshot>())
+                if (l != null && before.FindLayer(l.Id) != null) newOrder.Add(l.Id);
+            if (SameOrder(oldOrder, newOrder, null))
+                return;
+
+            // One layer moved (RequestReorderLayerRpc): the one whose removal makes both orders
+            // equal. The active layer is tried first, since the menus move the selected layer.
+            var candidates = new List<string>(newOrder);
+            if (activeAfter != null && candidates.Remove(activeAfter.Id))
+                candidates.Insert(0, activeAfter.Id);
+            foreach (string id in candidates)
+            {
+                if (!SameOrder(oldOrder, newOrder, id))
+                    continue;
+                LayerSnapshot moved = after.FindLayer(id);
+                result.Add(new LayerChange(moved.Name, StudyActions.ReorderLayer,
+                    (IndexOf(before.Layers, id) + 1).ToString(k_Inv), (IndexOf(after.Layers, id) + 1).ToString(k_Inv)));
+                return;
+            }
+
+            // Several moved at once (a snapshot apply): the whole order, by name.
+            result.Add(new LayerChange("", StudyActions.ReorderLayer, OrderText(before, oldOrder), OrderText(after, newOrder)));
+        }
+
+        static bool SameOrder(List<string> a, List<string> b, string skip)
+        {
+            int i = 0, j = 0;
+            while (true)
+            {
+                while (i < a.Count && a[i] == skip) i++;
+                while (j < b.Count && b[j] == skip) j++;
+                if (i >= a.Count || j >= b.Count)
+                    return i >= a.Count && j >= b.Count;
+                if (a[i++] != b[j++])
+                    return false;
+            }
+        }
+
+        static int IndexOf(LayerSnapshot[] layers, string id)
+        {
+            for (int i = 0; i < Len(layers); i++)
+                if (layers[i] != null && layers[i].Id == id) return i;
+            return -1;
+        }
+
+        static string OrderText(PlotSnapshot s, List<string> ids)
+        {
+            var names = new List<string>(ids.Count);
+            foreach (string id in ids)
+                names.Add(s.FindLayer(id)?.Name ?? id);
+            return string.Join(" | ", names);
+        }
+
+        /// <summary>
+        /// The rows for one layer that exists on both sides (after = the stack it is in now).
+        /// A point layer whose dataset changed is one LoadDataset row (its mapping was reset with
+        /// it). A computed layer has no mapping of its own (requests refuse it; a freeze copies the
+        /// source's), so it only gets its layer-only and computed rows.
+        /// </summary>
+        static void DescribeLayer(List<(string, string, string)> result, PlotSnapshot after, LayerSnapshot was, LayerSnapshot now,
+                                  Func<string, DatasetColumnar> datasetOf)
+        {
+            if ((was.Name ?? "") != (now.Name ?? ""))
+                result.Add((StudyActions.RenameLayer, was.Name ?? "", now.Name ?? ""));
+
+            bool computed = (LayerKind)now.Kind == LayerKind.Computed;
+            if (!computed && (was.DatasetName ?? "") != (now.DatasetName ?? ""))
+            {
+                result.Add((StudyActions.LoadDataset, was.DatasetName ?? "", now.DatasetName ?? ""));
+                return;
+            }
+
+            DatasetColumnar dataset = DatasetOfLayer(after, now, datasetOf);
+            if (!computed)
+                DescribeMapping(result, was, now, dataset);
+
+            if (was.Visible != now.Visible)
+                result.Add((StudyActions.SetLayerVisible, BoolText(was.Visible), BoolText(now.Visible)));
+            if (was.Normalised != now.Normalised)
+                result.Add((StudyActions.SetLayerNormalised, BoolText(was.Normalised), BoolText(now.Normalised)));
+            if (Math.Abs(was.Opacity - now.Opacity) > 1e-4f)
+                result.Add((StudyActions.SetLayerOpacity, was.Opacity.ToString("0.##", k_Inv), now.Opacity.ToString("0.##", k_Inv)));
+            if (was.FixedColour != now.FixedColour)
+                result.Add((StudyActions.SetLayerColour, ColourText(was.FixedColour), ColourText(now.FixedColour)));
+            if (was.DefaultGlyph != now.DefaultGlyph)
+                result.Add((StudyActions.SetLayerGlyph, was.DefaultGlyph.ToString(k_Inv), now.DefaultGlyph.ToString(k_Inv)));
+            if (was.TimeBehaviour != now.TimeBehaviour)
+                result.Add((StudyActions.SetLayerTimeBehaviour, TimeBehaviourText(was.TimeBehaviour), TimeBehaviourText(now.TimeBehaviour)));
+            AddColumn(result, StudyActions.SetLayerEndTime, was.EndTimeColumn, now.EndTimeColumn, dataset);
+            AddColumn(result, StudyActions.SetLayerLabel, was.LabelColumn, now.LabelColumn, dataset);
+            if (was.HiddenInSource != now.HiddenInSource)
+                result.Add((StudyActions.SetSubsetHiddenInSource, BoolText(was.HiddenInSource), BoolText(now.HiddenInSource)));
+            if (Math.Abs(was.LineWidth - now.LineWidth) > 1e-6f)
+                result.Add((StudyActions.SetLayerLineWidth, was.LineWidth.ToString("0.####", k_Inv), now.LineWidth.ToString("0.####", k_Inv)));
+
+            if (was.DriverAxis != now.DriverAxis)
+                AddParam(result, "Axis", AxisText(was.DriverAxis), AxisText(now.DriverAxis));
+            if (was.OrderColumn != now.OrderColumn)
+                AddParam(result, "Order", OrderColumnText(was.OrderColumn, dataset), OrderColumnText(now.OrderColumn, dataset));
+            if (was.Smoothed != now.Smoothed)
+                AddParam(result, "Smoothed", BoolText(was.Smoothed), BoolText(now.Smoothed));
+            if (!was.RefValue.Equals(now.RefValue))
+                AddParam(result, "Value", FormatFloat(was.RefValue), FormatFloat(now.RefValue));
+            if (Math.Abs(was.SmoothSpan - now.SmoothSpan) > 1e-6f)
+                AddParam(result, "Span", was.SmoothSpan.ToString("0.###", k_Inv), now.SmoothSpan.ToString("0.###", k_Inv));
+        }
+
+        static void AddParam(List<(string, string, string)> result, string name, string before, string after) =>
+            result.Add((StudyActions.SetComputedParam, name + "=" + before, name + "=" + after));
+
+        /// <summary>
+        /// The dataset whose column names a layer's indices refer to: its own, or for a computed
+        /// layer its source's while the source exists in s (its own frozen one after that).
+        /// </summary>
+        internal static DatasetColumnar DatasetOfLayer(PlotSnapshot s, LayerSnapshot layer, Func<string, DatasetColumnar> datasetOf)
+        {
+            if (layer == null || datasetOf == null)
+                return null;
+            string name = layer.DatasetName ?? "";
+            if ((LayerKind)layer.Kind == LayerKind.Computed)
+            {
+                LayerSnapshot source = s?.FindLayer(layer.SourceLayerId);
+                if (source != null)
+                    name = source.DatasetName ?? "";
+            }
+            return name.Length > 0 ? datasetOf(name) : null;
+        }
+
+        /// <summary>"#RRGGBB", or "#RRGGBBAA" when not opaque (LayerSnapshot.PackColour layout).</summary>
+        internal static string ColourText(uint packed)
+        {
+            Color32 c = LayerSnapshot.UnpackColour(packed);
+            string rgb = "#" + c.r.ToString("X2", k_Inv) + c.g.ToString("X2", k_Inv) + c.b.ToString("X2", k_Inv);
+            return c.a == 255 ? rgb : rgb + c.a.ToString("X2", k_Inv);
+        }
+
+        internal static string TimeBehaviourText(byte value) => ((LayerTimeBehaviour)value).ToString();
+
+        // -1 = LayerRules.DefaultDriverAxis / the source's time column.
+        internal static string AxisText(int axis) => axis < 0 ? "Auto" : LayerRules.AxisName(axis);
+        static string OrderColumnText(int column, DatasetColumnar dataset) => column < 0 ? "Auto" : ColumnName(column, dataset);
 
         /// <summary>"Dataset: movement.cdataset", "Subset: movement.cdataset", "Computed: Trendline of Movement".</summary>
         static string LayerKindText(PlotSnapshot s, LayerSnapshot layer)
@@ -205,28 +394,32 @@ namespace DataViz.Study
                     if (!ReferenceEquals(x, y)) return true;
                     continue;
                 }
-                if (x.Id != y.Id || x.Name != y.Name || x.Kind != y.Kind || x.Visible != y.Visible ||
-                    x.DatasetName != y.DatasetName || x.SourceLayerId != y.SourceLayerId ||
-                    x.XColumn != y.XColumn || x.YColumn != y.YColumn || x.ZColumn != y.ZColumn || x.Normalised != y.Normalised ||
-                    x.ColourColumn != y.ColourColumn || x.FixedColour != y.FixedColour ||
-                    Math.Abs(x.PointSize - y.PointSize) > k_PointSizeEpsilon || x.SizeMapped != y.SizeMapped || x.SizeColumn != y.SizeColumn ||
-                    Math.Abs(x.Opacity - y.Opacity) > 1e-4f || x.DefaultGlyph != y.DefaultGlyph || x.GlyphColumn != y.GlyphColumn ||
-                    !Same(x.GlyphLabels, y.GlyphLabels) || !Same(x.GlyphIndices, y.GlyphIndices) ||
-                    !Same(x.RangeGlyphs, y.RangeGlyphs) || !Same(x.RangeMins, y.RangeMins) || !Same(x.RangeMaxs, y.RangeMaxs) ||
-                    !Same(x.FilterColumns, y.FilterColumns) || !Same(x.FilterLabels, y.FilterLabels) ||
-                    !Same(x.FilterRangeCounts, y.FilterRangeCounts) || !Same(x.FilterRangeMins, y.FilterRangeMins) || !Same(x.FilterRangeMaxs, y.FilterRangeMaxs) ||
-                    x.TimeColumn != y.TimeColumn || x.TimeBehaviour != y.TimeBehaviour || x.EndTimeColumn != y.EndTimeColumn ||
-                    x.LabelColumn != y.LabelColumn || x.HiddenInSource != y.HiddenInSource ||
-                    x.ComputedKind != y.ComputedKind || x.DriverAxis != y.DriverAxis || x.OrderColumn != y.OrderColumn ||
-                    x.Smoothed != y.Smoothed || x.RefValue != y.RefValue || x.SmoothSpan != y.SmoothSpan || x.LineWidth != y.LineWidth)
+                if (x.Id != y.Id || x.Name != y.Name || SettingsDiffer(x, y))
                     return true;
             }
             return false;
         }
 
+        // Every field but Id, Name and DatasetHash.
+        static bool SettingsDiffer(LayerSnapshot x, LayerSnapshot y) =>
+            x.Kind != y.Kind || x.Visible != y.Visible ||
+            x.DatasetName != y.DatasetName || x.SourceLayerId != y.SourceLayerId ||
+            x.XColumn != y.XColumn || x.YColumn != y.YColumn || x.ZColumn != y.ZColumn || x.Normalised != y.Normalised ||
+            x.ColourColumn != y.ColourColumn || x.FixedColour != y.FixedColour ||
+            Math.Abs(x.PointSize - y.PointSize) > k_PointSizeEpsilon || x.SizeMapped != y.SizeMapped || x.SizeColumn != y.SizeColumn ||
+            Math.Abs(x.Opacity - y.Opacity) > 1e-4f || x.DefaultGlyph != y.DefaultGlyph || x.GlyphColumn != y.GlyphColumn ||
+            !Same(x.GlyphLabels, y.GlyphLabels) || !Same(x.GlyphIndices, y.GlyphIndices) ||
+            !Same(x.RangeGlyphs, y.RangeGlyphs) || !Same(x.RangeMins, y.RangeMins) || !Same(x.RangeMaxs, y.RangeMaxs) ||
+            !Same(x.FilterColumns, y.FilterColumns) || !Same(x.FilterLabels, y.FilterLabels) ||
+            !Same(x.FilterRangeCounts, y.FilterRangeCounts) || !Same(x.FilterRangeMins, y.FilterRangeMins) || !Same(x.FilterRangeMaxs, y.FilterRangeMaxs) ||
+            x.TimeColumn != y.TimeColumn || x.TimeBehaviour != y.TimeBehaviour || x.EndTimeColumn != y.EndTimeColumn ||
+            x.LabelColumn != y.LabelColumn || x.HiddenInSource != y.HiddenInSource ||
+            x.ComputedKind != y.ComputedKind || x.DriverAxis != y.DriverAxis || x.OrderColumn != y.OrderColumn ||
+            x.Smoothed != y.Smoothed || x.RefValue != y.RefValue || x.SmoothSpan != y.SmoothSpan || x.LineWidth != y.LineWidth;
+
         // ---- glyphs -------------------------------------------------------------------------
 
-        static void DescribeGlyphs(List<(string, string, string)> result, PlotSnapshot before, PlotSnapshot after, DatasetColumnar dataset)
+        static void DescribeGlyphs(List<(string, string, string)> result, LayerSnapshot before, LayerSnapshot after, DatasetColumnar dataset)
         {
             bool columnChanged = before.GlyphColumn != after.GlyphColumn;
             AddColumn(result, StudyActions.SetGlyphColumn, before.GlyphColumn, after.GlyphColumn, dataset);
@@ -268,7 +461,7 @@ namespace DataViz.Study
                 result.Add((StudyActions.SetGlyphRanges, GlyphRangesText(before), GlyphRangesText(after)));
         }
 
-        static Dictionary<string, int> GlyphMap(PlotSnapshot s)
+        static Dictionary<string, int> GlyphMap(LayerSnapshot s)
         {
             var map = new Dictionary<string, int>();
             int n = Math.Min(Len(s.GlyphLabels), Len(s.GlyphIndices));
@@ -277,7 +470,7 @@ namespace DataViz.Study
             return map;
         }
 
-        static string GlyphRangesText(PlotSnapshot s)
+        static string GlyphRangesText(LayerSnapshot s)
         {
             int n = Math.Min(Len(s.RangeGlyphs), Math.Min(Len(s.RangeMins), Len(s.RangeMaxs)));
             var parts = new List<string>(n);
@@ -306,7 +499,9 @@ namespace DataViz.Study
             }
         }
 
-        internal static List<FilterInfo> Filters(PlotSnapshot s)
+        internal static List<FilterInfo> Filters(PlotSnapshot s) => Filters(s?.ActiveLayer ?? k_NoLayer);
+
+        internal static List<FilterInfo> Filters(LayerSnapshot s)
         {
             int n = Len(s.FilterColumns);
             var list = new List<FilterInfo>(n);
@@ -327,7 +522,7 @@ namespace DataViz.Study
             return list;
         }
 
-        static void DescribeFilters(List<(string, string, string)> result, PlotSnapshot before, PlotSnapshot after, DatasetColumnar dataset)
+        static void DescribeFilters(List<(string, string, string)> result, LayerSnapshot before, LayerSnapshot after, DatasetColumnar dataset)
         {
             List<FilterInfo> oldF = Filters(before);
             List<FilterInfo> newF = Filters(after);

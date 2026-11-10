@@ -31,7 +31,7 @@ namespace DataViz.Study
     {
         public static readonly string[] Header =
         {
-            "Timestamp", "SessionTime", "ParticipantID", "Part", "Source", "Action",
+            "Timestamp", "SessionTime", "ParticipantID", "Part", "Source", "Action", "Layer",
             "OldValue", "NewValue", "RequestText", "Tag", "PlotState",
         };
 
@@ -41,15 +41,14 @@ namespace DataViz.Study
         public int Part;
         public ChangeSource Source;
         public string Action = "";   // see StudyActions
+        // The layer a layer-scoped row is about (its Name, as shown to the user); "" for plot-level
+        // rows (see StudyActions.IsPlotLevel). Written right after Action (decision E2).
+        public string Layer = "";
         public string OldValue = "";
         public string NewValue = "";
         public string RequestText = "";
         public RequestTag Tag = RequestTag.None; // written as "" when None
         public string PlotState = ""; // compact JSON, see PlotStateJson
-
-        // The layer a layer-scoped row is about (its Name); "" for plot-level rows. Not yet in
-        // Header/FormatRow: WP7 adds the column after Action (decision E2).
-        public string Layer = "";
     }
 
     /// <summary>Action names used in the Action column. Use these constants, never literals.</summary>
@@ -104,8 +103,28 @@ namespace DataViz.Study
         public const string SetLayerEndTime = "SetLayerEndTime";
         public const string SetLayerLabel = "SetLayerLabel";
         public const string SetSubsetHiddenInSource = "SetSubsetHiddenInSource";
-        public const string SetComputedParam = "SetComputedParam";
+        public const string SetComputedParam = "SetComputedParam"; // values "<Param>=<value>": Axis, Order, Smoothed, Value, Span
+        public const string SetLayerLineWidth = "SetLayerLineWidth";
         public const string Redo = "Redo";
+
+        /// <summary>
+        /// True for actions about the whole plot or the session, whose rows leave the Layer column
+        /// empty: Play, Pause, Scrub, SetPlaybackRate, Tooltips, ResetPosition, LoadDataset (the
+        /// dashboard's "new plot"), ApplyView, Undo, Redo, Note, Marker, SessionStart, SessionStop.
+        /// Every other action is layer-scoped.
+        /// </summary>
+        public static bool IsPlotLevel(string action)
+        {
+            switch (action)
+            {
+                case Play: case Pause: case Scrub: case SetPlaybackRate: case Tooltips: case ResetPosition:
+                case LoadDataset: case ApplyView: case Undo: case Redo: case Note: case Marker:
+                case SessionStart: case SessionStop:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     }
 
     /// <summary>
@@ -153,15 +172,17 @@ namespace DataViz.Study
 
         /// <summary>
         /// RunAsFacilitator for a layer-scoped change: <paramref name="layer"/> is the layer's Name
-        /// for the Layer column ("" for a plot-level change). The overload without it uses the edit
-        /// layer's name, captured before apply runs.
+        /// for the Layer column ("" for a plot-level change). Pass null for "the active layer after
+        /// apply ran" (AddLayer, DuplicateLayer: the new layer's name is not known before). The
+        /// overload without it uses the edit layer's name, captured before apply runs, or "" when
+        /// StudyActions.IsPlotLevel(action).
         /// </summary>
         void RunAsFacilitator(string action, string layer, string oldValue, string newValue, Action apply, bool writeRow = true);
 
-        /// <summary>Writes a facilitator row without running anything (e.g. after an undo).</summary>
+        /// <summary>Writes a facilitator row without running anything (e.g. after an undo). Layer as in the RunAsFacilitator overload without it.</summary>
         void LogFacilitatorAction(string action, string oldValue, string newValue);
 
-        /// <summary>LogFacilitatorAction with the layer's Name for the Layer column ("" = plot-level).</summary>
+        /// <summary>LogFacilitatorAction with the layer's Name for the Layer column ("" = plot-level, null = the active layer).</summary>
         void LogFacilitatorAction(string action, string layer, string oldValue, string newValue);
         void LogRequest(string text, RequestTag tag);
         void LogMarker(string note = "");

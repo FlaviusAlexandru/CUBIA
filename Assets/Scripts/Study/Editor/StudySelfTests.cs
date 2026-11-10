@@ -123,9 +123,9 @@ namespace DataViz.Study
                     w.WriteRow(row2);
                 }
 
-                string header = "Timestamp,SessionTime,ParticipantID,Part,Source,Action,OldValue,NewValue,RequestText,Tag,PlotState";
-                string line1 = "2026-11-06T14:05:09.123,12.50,P07,1,facilitator,SetX,a,b,,,";
-                string line2 = "2026-11-06T14:05:10.007,3.14,P07,1,request,Note,,,\"Show \"\"big\"\" values, please\",Partly,\"{\"\"a\"\":1,\"\"b\"\":\"\"x\"\"}\"";
+                string header = "Timestamp,SessionTime,ParticipantID,Part,Source,Action,Layer,OldValue,NewValue,RequestText,Tag,PlotState";
+                string line1 = "2026-11-06T14:05:09.123,12.50,P07,1,facilitator,SetX,,a,b,,,";
+                string line2 = "2026-11-06T14:05:10.007,3.14,P07,1,request,Note,,,,\"Show \"\"big\"\" values, please\",Partly,\"{\"\"a\"\":1,\"\"b\"\":\"\"x\"\"}\"";
 
                 string[] lines = File.ReadAllLines(path);
                 t.Eq("writer line count", "3", lines.Length.ToString(CultureInfo.InvariantCulture));

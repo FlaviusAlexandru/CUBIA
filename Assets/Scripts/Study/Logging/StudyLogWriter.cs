@@ -70,6 +70,7 @@ namespace DataViz.Study
                 row.Part.ToString(k_Inv),
                 SourceName(row.Source),
                 row.Action ?? "",
+                row.Layer ?? "",
                 row.OldValue ?? "",
                 row.NewValue ?? "",
                 row.RequestText ?? "",

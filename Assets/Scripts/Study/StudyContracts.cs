@@ -46,6 +46,10 @@ namespace DataViz.Study
         public string RequestText = "";
         public RequestTag Tag = RequestTag.None; // written as "" when None
         public string PlotState = ""; // compact JSON, see PlotStateJson
+
+        // The layer a layer-scoped row is about (its Name); "" for plot-level rows. Not yet in
+        // Header/FormatRow: WP7 adds the column after Action (decision E2).
+        public string Layer = "";
     }
 
     /// <summary>Action names used in the Action column. Use these constants, never literals.</summary>
@@ -83,6 +87,25 @@ namespace DataViz.Study
         public const string SessionStart = "SessionStart";
         public const string SessionStop = "SessionStop";
         public const string Unknown = "Change";            // participant change that could not be named
+
+        // Layers (LFR-28). Each value equals its name. Layer-scoped rows name the layer in StudyLogRow.Layer.
+        public const string AddLayer = "AddLayer";         // NewValue = "<Kind>: <dataset, or computed kind of source>"
+        public const string RemoveLayer = "RemoveLayer";
+        public const string DuplicateLayer = "DuplicateLayer";
+        public const string RenameLayer = "RenameLayer";
+        public const string ReorderLayer = "ReorderLayer"; // 1-based positions
+        public const string SelectLayer = "SelectLayer";   // the active layer changed; values are layer names
+        public const string SetLayerVisible = "SetLayerVisible";
+        public const string SetLayerNormalised = "SetLayerNormalised";
+        public const string SetLayerOpacity = "SetLayerOpacity";
+        public const string SetLayerColour = "SetLayerColour";
+        public const string SetLayerGlyph = "SetLayerGlyph";
+        public const string SetLayerTimeBehaviour = "SetLayerTimeBehaviour";
+        public const string SetLayerEndTime = "SetLayerEndTime";
+        public const string SetLayerLabel = "SetLayerLabel";
+        public const string SetSubsetHiddenInSource = "SetSubsetHiddenInSource";
+        public const string SetComputedParam = "SetComputedParam";
+        public const string Redo = "Redo";
     }
 
     /// <summary>
@@ -128,8 +151,18 @@ namespace DataViz.Study
         /// </summary>
         void RunAsFacilitator(string action, string oldValue, string newValue, Action apply, bool writeRow = true);
 
+        /// <summary>
+        /// RunAsFacilitator for a layer-scoped change: <paramref name="layer"/> is the layer's Name
+        /// for the Layer column ("" for a plot-level change). The overload without it uses the edit
+        /// layer's name, captured before apply runs.
+        /// </summary>
+        void RunAsFacilitator(string action, string layer, string oldValue, string newValue, Action apply, bool writeRow = true);
+
         /// <summary>Writes a facilitator row without running anything (e.g. after an undo).</summary>
         void LogFacilitatorAction(string action, string oldValue, string newValue);
+
+        /// <summary>LogFacilitatorAction with the layer's Name for the Layer column ("" = plot-level).</summary>
+        void LogFacilitatorAction(string action, string layer, string oldValue, string newValue);
         void LogRequest(string text, RequestTag tag);
         void LogMarker(string note = "");
     }

@@ -5,26 +5,48 @@ using DataViz.Flow;
 using DataViz.Networking;
 using DataViz.Wizard;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 namespace DataViz
 {
-    public class MultiplayerScatterplotManager : MonoBehaviour
+    // The manager is split into partial files so later work packages own disjoint files:
+    //   MultiplayerScatterplotManager.cs         fields, forwarders, the legacy Request…Rpc methods, load, lifecycle
+    //   MultiplayerScatterplotManager.Layers.cs  layer stack, edit-layer scope, layer requests, events, bounds, clock
+    //   MultiplayerScatterplotManager.Shuffle.cs shuffle locks, blacklist, history and the shuffle itself
+    public partial class MultiplayerScatterplotManager : MonoBehaviour
     {
         public static MultiplayerScatterplotManager Instance { get; private set; }
 
-        [Header("Dataset Settings")]
-        public string CurrentDatasetName = "test.csv";
+        //<summary>
+        // Layers. The plot is a LayerStack (see the .Layers.cs part). The per-layer settings that used
+        // to be public fields here (CurrentDatasetName, XColumnIndex, …, Filters, GlyphRanges,
+        // LoadedDataset) are now properties that forward to EditLayer: the layer named by an open
+        // EditLayerScope, else the active layer. Only playback (TimeScrub, IsPlaying, PlaybackSpeed,
+        // PlaybackRate) and ShowTooltips stay plot-level fields.
+        // The scene still holds the old field values; the m_Initial… seeds below pick them up through
+        // FormerlySerializedAs, and Awake builds the base layer "L1" from them.
+        //</summary>
 
-        [Header("Visualization Settings")]
-        public int XColumnIndex = 0;
-        public int YColumnIndex = 1;
-        public int ZColumnIndex = 2;
-        public int ColorColumnIndex = -1;
-        public float PointSize = 0.1f;
+        [Header("Dataset Settings (base layer seed)")]
+        [FormerlySerializedAs("CurrentDatasetName")]
+        [SerializeField] private string m_InitialDatasetName = "test.csv";
+
+        [Header("Visualization Settings (base layer seed)")]
+        [FormerlySerializedAs("XColumnIndex")]
+        [SerializeField] private int m_InitialXColumn = 0;
+        [FormerlySerializedAs("YColumnIndex")]
+        [SerializeField] private int m_InitialYColumn = 1;
+        [FormerlySerializedAs("ZColumnIndex")]
+        [SerializeField] private int m_InitialZColumn = 2;
+        [FormerlySerializedAs("ColorColumnIndex")]
+        [SerializeField] private int m_InitialColorColumn = -1;
+        [FormerlySerializedAs("PointSize")]
+        [SerializeField] private float m_InitialPointSize = 0.1f;
         public const float MaxPointSize = 0.1f; // the point size slider's 100% maps to this
 
         [Header("Temporal Settings")]
-        public int TimeColumnIndex = -1;
+        [FormerlySerializedAs("TimeColumnIndex")]
+        [SerializeField] private int m_InitialTimeColumn = -1;
         [Range(0f, 1f)]
         public float TimeScrub = 0f;
         public bool IsPlaying = false;
@@ -49,274 +71,57 @@ namespace DataViz
         [Header("Interaction Settings")]
         public bool ShowTooltips = false;
 
+        [Header("Base layer seed: filters, size, glyphs")]
+        [FormerlySerializedAs("Filters")]
+        [SerializeField] private List<FilterEntry> m_InitialFilters = new();
+        [FormerlySerializedAs("SizeMapped")]
+        [SerializeField] private bool m_InitialSizeMapped = false;
+        [FormerlySerializedAs("SizeColumnIndex")]
+        [SerializeField] private int m_InitialSizeColumn = -1;
+        [FormerlySerializedAs("GlyphColumnIndex")]
+        [SerializeField] private int m_InitialGlyphColumn = -1;
+        [FormerlySerializedAs("GlyphAssignments")]
+        [SerializeField] private List<GlyphAssignment> m_InitialGlyphAssignments = new();
+        [FormerlySerializedAs("GlyphRanges")]
+        [SerializeField] private List<GlyphRange> m_InitialGlyphRanges = new();
+
+        // ---- Forwarders: per-layer settings of the edit layer --------------------------------
+        // Getters read MappingLayer (the edit layer, or a computed edit layer's source, so menus
+        // show something sensible); setters write the edit layer. On an empty plot they act on a
+        // private placeholder layer, so nothing throws; every mutating request returns early then.
+
+        /// <summary>Dataset file name of the edit layer; "" when there is none (never null).</summary>
+        public string CurrentDatasetName
+        {
+            get => MappingLayer.DatasetName ?? "";
+            set => EditLayer.DatasetName = value ?? "";
+        }
+
+        public int XColumnIndex { get => MappingLayer.XColumnIndex; set => EditLayer.XColumnIndex = value; }
+        public int YColumnIndex { get => MappingLayer.YColumnIndex; set => EditLayer.YColumnIndex = value; }
+        public int ZColumnIndex { get => MappingLayer.ZColumnIndex; set => EditLayer.ZColumnIndex = value; }
+        public int ColorColumnIndex { get => MappingLayer.ColorColumnIndex; set => EditLayer.ColorColumnIndex = value; }
+        public float PointSize { get => MappingLayer.PointSize; set => EditLayer.PointSize = value; }
+        public int TimeColumnIndex { get => MappingLayer.TimeColumnIndex; set => EditLayer.TimeColumnIndex = value; }
+
+        /// <summary>
+        /// The edit layer's loaded dataset. Null before the first load, on an empty plot, and on a
+        /// layer whose dataset could not be loaded. (Before layers this was a serialised field that
+        /// held an empty placeholder until the first load.)
+        /// </summary>
+        public DatasetColumnar LoadedDataset
+        {
+            get => MappingLayer.Dataset;
+            private set => EditLayer.Dataset = value;
+        }
+
         //<summary>
-        // Shuffle locks. Every field Shuffle can change (ShuffleLocks.ShuffleOrder: X, Y, Z, Size,
-        // Colour, Glyph, Time) is Locked or Unlocked; Shuffle only re-picks unlocked fields. Locks
-        // affect Shuffle and nothing else. They are stored PER DATASET and persisted to disk next
-        // to the blacklist and bookmarks (scatterplot_shuffle_lock_prefs.json). Defaults: X/Y/Z
-        // unlocked, everything else locked (ShuffleLocks.DefaultLocked). Size can only be unlocked
-        // while SizeMapped is on; while Fixed it always counts as locked.
-        // XAxisLocked/YAxisLocked/ZAxisLocked, RequestSetAxisLockedRpc and IsAxisLocked are thin
-        // wrappers over the X/Y/Z locks, so existing callers keep working.
-        //</summary>
-        private readonly Dictionary<string, Dictionary<MappingTarget, bool>> m_ShuffleLocksByDataset = new();
-
-        // Used while no dataset is loaded, so lock calls never touch a real dataset's entry.
-        private readonly Dictionary<MappingTarget, bool> m_NoDatasetShuffleLocks = ShuffleLocks.CreateDefaults();
-
-        public bool XAxisLocked
-        {
-            get => IsFieldLocked(MappingTarget.X);
-            set => RequestSetFieldLockedRpc(MappingTarget.X, value);
-        }
-
-        public bool YAxisLocked
-        {
-            get => IsFieldLocked(MappingTarget.Y);
-            set => RequestSetFieldLockedRpc(MappingTarget.Y, value);
-        }
-
-        public bool ZAxisLocked
-        {
-            get => IsFieldLocked(MappingTarget.Z);
-            set => RequestSetFieldLockedRpc(MappingTarget.Z, value);
-        }
-
-        public void RequestSetAxisLockedRpc(int axis, bool locked)
-        {
-            if (TryGetAxisTarget(axis, out MappingTarget target))
-                RequestSetFieldLockedRpc(target, locked);
-        }
-
-        public bool IsAxisLocked(int axis) => TryGetAxisTarget(axis, out MappingTarget target) && IsFieldLocked(target);
-
-        private static bool TryGetAxisTarget(int axis, out MappingTarget target)
-        {
-            switch (axis)
-            {
-                case 0: target = MappingTarget.X; return true;
-                case 1: target = MappingTarget.Y; return true;
-                case 2: target = MappingTarget.Z; return true;
-                default: target = MappingTarget.X; return false;
-            }
-        }
-
-        /// <summary>
-        /// True when Shuffle keeps this field's label. A field Shuffle never touches (Filter), and
-        /// Size while Fixed, always count as locked.
-        /// </summary>
-        public bool IsFieldLocked(MappingTarget target)
-        {
-            if (!CanUnlockField(target))
-                return true;
-
-            return GetShuffleLocksForCurrentDataset().TryGetValue(target, out bool locked)
-                ? locked
-                : ShuffleLocks.DefaultLocked(target);
-        }
-
-        /// <summary>Whether the field can be unlocked right now: any shuffled field, Size only while Mapped.</summary>
-        public bool CanUnlockField(MappingTarget target) =>
-            ShuffleLocks.IsShuffled(target) && (target != MappingTarget.Size || SizeMapped);
-
-        /// <summary>
-        /// True when every field of the island that can be unlocked right now is locked. The
-        /// island's Lock all / Unlock all button uses this to decide which of the two it does.
-        /// </summary>
-        public bool IsIslandLocked(ShuffleIsland island)
-        {
-            foreach (MappingTarget target in ShuffleLocks.FieldsIn(island))
-            {
-                if (CanUnlockField(target) && !IsFieldLocked(target))
-                    return false;
-            }
-
-            return true;
-        }
-
-        /// <summary>True when every shuffle field that can be unlocked right now is locked.</summary>
-        public bool AreAllFieldsLocked()
-        {
-            foreach (ShuffleIsland island in ShuffleLocks.Islands)
-            {
-                if (!IsIslandLocked(island))
-                    return false;
-            }
-
-            return true;
-        }
-
-        public void RequestSetFieldLockedRpc(MappingTarget target, bool locked)
-        {
-            if (SetFieldLocked(target, locked))
-                OnShuffleLocksChanged();
-        }
-
-        public void RequestSetIslandLockedRpc(ShuffleIsland island, bool locked)
-        {
-            bool changed = false;
-            foreach (MappingTarget target in ShuffleLocks.FieldsIn(island))
-                changed |= SetFieldLocked(target, locked);
-
-            if (changed)
-                OnShuffleLocksChanged();
-        }
-
-        public void RequestSetAllLockedRpc(bool locked)
-        {
-            bool changed = false;
-            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
-                changed |= SetFieldLocked(target, locked);
-
-            if (changed)
-                OnShuffleLocksChanged();
-        }
-
-        // Stores one lock without saving or raising events. Unlocking is refused for a field that
-        // can't be unlocked right now (Size while Fixed). Returns true when the stored value changed.
-        private bool SetFieldLocked(MappingTarget target, bool locked)
-        {
-            if (!ShuffleLocks.IsShuffled(target))
-                return false;
-
-            if (!locked && !CanUnlockField(target))
-                return false;
-
-            Dictionary<MappingTarget, bool> locks = GetShuffleLocksForCurrentDataset();
-            if (locks.TryGetValue(target, out bool current) && current == locked)
-                return false;
-
-            locks[target] = locked;
-            return true;
-        }
-
-        private void OnShuffleLocksChanged()
-        {
-            if (HasNamedDataset)
-                SaveShuffleLockPrefs();
-
-            OnPlotSettingsChanged?.Invoke();
-        }
-
-        // LoadedDataset is a serialized field, so before the first real load it can be an empty
-        // placeholder with no name; locks set then must not be stored under an empty key.
-        private bool HasNamedDataset => LoadedDataset != null && !string.IsNullOrEmpty(LoadedDataset.Name);
-
-        private Dictionary<MappingTarget, bool> GetShuffleLocksForCurrentDataset()
-        {
-            if (!HasNamedDataset)
-                return m_NoDatasetShuffleLocks;
-
-            string key = LoadedDataset.Name;
-
-            if (!m_ShuffleLocksByDataset.TryGetValue(key, out Dictionary<MappingTarget, bool> locks))
-            {
-                locks = ShuffleLocks.CreateDefaults();
-                m_ShuffleLocksByDataset[key] = locks;
-            }
-
-            return locks;
-        }
-
-        // Shuffle lock file: per dataset, one entry per field (field name + Locked).
-        [Serializable]
-        private class FieldLockPref
-        {
-            public string Field;
-            public bool Locked;
-        }
-
-        [Serializable]
-        private class DatasetShuffleLockPrefs
-        {
-            public string DatasetName;
-            public List<FieldLockPref> Fields = new();
-        }
-
-        [Serializable]
-        private class ShuffleLockPrefsFile
-        {
-            public List<DatasetShuffleLockPrefs> Datasets = new();
-        }
-
-        private string ShuffleLockPrefsFilePath => Path.Combine(Application.persistentDataPath, "scatterplot_shuffle_lock_prefs.json");
-
-        private void LoadShuffleLockPrefs()
-        {
-            try
-            {
-                if (!File.Exists(ShuffleLockPrefsFilePath))
-                    return;
-
-                string json = File.ReadAllText(ShuffleLockPrefsFilePath);
-                ShuffleLockPrefsFile data = JsonUtility.FromJson<ShuffleLockPrefsFile>(json);
-
-                if (data?.Datasets == null)
-                    return;
-
-                foreach (DatasetShuffleLockPrefs entry in data.Datasets)
-                {
-                    if (string.IsNullOrEmpty(entry.DatasetName) || entry.Fields == null)
-                        continue;
-
-                    // Start from the defaults so a field missing from the file keeps its default.
-                    Dictionary<MappingTarget, bool> locks = ShuffleLocks.CreateDefaults();
-                    foreach (FieldLockPref field in entry.Fields)
-                    {
-                        if (Enum.TryParse(field.Field, out MappingTarget target) && ShuffleLocks.IsShuffled(target))
-                            locks[target] = field.Locked;
-                    }
-
-                    m_ShuffleLocksByDataset[entry.DatasetName] = locks;
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to load shuffle lock prefs from {ShuffleLockPrefsFilePath}: {e.Message}");
-            }
-        }
-
-        private void SaveShuffleLockPrefs()
-        {
-            try
-            {
-                ShuffleLockPrefsFile data = new ShuffleLockPrefsFile();
-
-                foreach (KeyValuePair<string, Dictionary<MappingTarget, bool>> kvp in m_ShuffleLocksByDataset)
-                {
-                    if (string.IsNullOrEmpty(kvp.Key))
-                        continue;
-
-                    DatasetShuffleLockPrefs entry = new DatasetShuffleLockPrefs { DatasetName = kvp.Key };
-                    bool allDefaults = true;
-                    foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
-                    {
-                        bool locked = kvp.Value.TryGetValue(target, out bool stored) ? stored : ShuffleLocks.DefaultLocked(target);
-                        allDefaults &= locked == ShuffleLocks.DefaultLocked(target);
-                        entry.Fields.Add(new FieldLockPref { Field = target.ToString(), Locked = locked });
-                    }
-
-                    if (allDefaults)
-                        continue; // a dataset never changed from the defaults needs no entry
-
-                    data.Datasets.Add(entry);
-                }
-
-                File.WriteAllText(ShuffleLockPrefsFilePath, JsonUtility.ToJson(data, true));
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[MultiplayerScatterplotManager] Failed to save shuffle lock prefs to {ShuffleLockPrefsFilePath}: {e.Message}");
-            }
-        }
-
         // Bookmarks (per dataset, ordered: the bookmark palette shows its blocks in bookmark order)
         // and the shuffle blacklist (per dataset; a blacklisted column stays choosable by hand) are
         // stored by ColumnPrefsStore, which the import wizard writes too. Both getters return
-        // copies; changes are saved back through ColumnPrefsStore.SetBookmarks/SetBlacklist.
-        private HashSet<string> GetBlacklistForCurrentDataset() =>
-            LoadedDataset == null ? new HashSet<string>() : ColumnPrefsStore.GetBlacklist(LoadedDataset.Name);
-
+        // copies; changes are saved back through ColumnPrefsStore.SetBookmarks/SetBlacklist. They
+        // follow the edit layer's dataset. (The blacklist lives in the .Shuffle.cs part.)
+        //</summary>
         private List<string> GetBookmarksForCurrentDataset() =>
             LoadedDataset == null ? new List<string>() : ColumnPrefsStore.GetBookmarks(LoadedDataset.Name);
 
@@ -328,10 +133,10 @@ namespace DataViz
         //("Any value" in the UI) keeps every row that HAS a value in that column; a non-empty Label
         //keeps only rows with exactly that value. Several entries combine with OR: a row is shown at
         //full alpha when it passes at least one entry. No entries = no filtering. Everything else is
-        //dimmed by ScatterplotVisualizer.
+        //dimmed by ScatterplotVisualizer (a Subset layer's filters remove rows instead).
         //FilterColumnIndex/FilterLabel are the FIRST entry, kept for the existing Filter Column /
         //Filter Value dropdowns (which edit that first entry). The bookmark palette's Filter slot
-        //appends entries via RequestAddFilterColumnRpc.
+        //appends entries via RequestAddFilterColumnRpc. Per layer: these forward to the edit layer.
         //</summary>
         [Serializable]
         public class FilterEntry
@@ -353,11 +158,14 @@ namespace DataViz
 
         public const int MaxFilterRanges = 5;
 
-        [Header("Filtering Settings")]
-        public List<FilterEntry> Filters = new();
+        public List<FilterEntry> Filters
+        {
+            get => MappingLayer.Filters;
+            set => EditLayer.Filters = value ?? new List<FilterEntry>();
+        }
 
-        public int FilterColumnIndex => Filters.Count > 0 ? Filters[0].ColumnIndex : -1;
-        public string FilterLabel => Filters.Count > 0 ? (Filters[0].Label ?? "") : "";
+        public int FilterColumnIndex => MappingLayer.FilterColumnIndex;
+        public string FilterLabel => MappingLayer.FilterLabel;
 
         //<summary>
         // Size encoding. Fixed (default, SizeMapped == false): every point uses PointSize, exactly as
@@ -366,9 +174,8 @@ namespace DataViz
         // so the point-size slider still sets the overall size. Rows with no value in the size
         // column, or no size column chosen, keep PointSize.
         //</summary>
-        [Header("Size Settings")]
-        public bool SizeMapped = false;
-        public int SizeColumnIndex = -1;
+        public bool SizeMapped { get => MappingLayer.SizeMapped; set => EditLayer.SizeMapped = value; }
+        public int SizeColumnIndex { get => MappingLayer.SizeColumnIndex; set => EditLayer.SizeColumnIndex = value; }
         public const float SizeMappedMinScale = 0.25f;
         public const float SizeMappedMaxScale = 1.75f;
 
@@ -380,9 +187,13 @@ namespace DataViz
         // labels fall back to glyph 0 (the base circle) in ScatterplotVisualizer.
         // Rows with no value in the glyph column keep the default glyph.
         //</summary>
-        [Header("Glyph Settings")]
-        public int GlyphColumnIndex = -1;
-        public List<GlyphAssignment> GlyphAssignments = new();
+        public int GlyphColumnIndex { get => MappingLayer.GlyphColumnIndex; set => EditLayer.GlyphColumnIndex = value; }
+
+        public List<GlyphAssignment> GlyphAssignments
+        {
+            get => MappingLayer.GlyphAssignments;
+            set => EditLayer.GlyphAssignments = value ?? new List<GlyphAssignment>();
+        }
 
         [System.Serializable]
         public class GlyphAssignment
@@ -401,7 +212,12 @@ namespace DataViz
         // keep the default glyph. Cleared when the glyph column changes or a dataset loads.
         // Set only through RequestSetGlyphRangesRpc, which validates the whole list.
         //</summary>
-        public List<GlyphRange> GlyphRanges = new();
+        public List<GlyphRange> GlyphRanges
+        {
+            get => MappingLayer.GlyphRanges;
+            set => EditLayer.GlyphRanges = value ?? new List<GlyphRange>();
+        }
+
         public const int MaxGlyphRanges = 5;
 
         [System.Serializable]
@@ -410,129 +226,6 @@ namespace DataViz
             public int glyphIndex;
             public float min;
             public float max;
-        }
-
-        [Header("Loaded Dataset")]
-        public DatasetColumnar LoadedDataset;
-
-        /// <summary>
-        /// One shuffle's worth of field selection (column index per shuffle-lockable field, -1 =
-        /// none), saved so "back"/"forward" can re-apply a previous combination instead of
-        /// generating a new random one.
-        /// </summary>
-        private struct ShuffleState
-        {
-            public int X;
-            public int Y;
-            public int Z;
-            public int Size;
-            public int Colour;
-            public int Glyph;
-            public int Time;
-
-            public bool SameAs(ShuffleState other) =>
-                X == other.X && Y == other.Y && Z == other.Z && Size == other.Size &&
-                Colour == other.Colour && Glyph == other.Glyph && Time == other.Time;
-        }
-
-        /// <summary>
-        /// Per-dataset shuffle history + position, so navigating back/forward
-        /// through past shuffles works independently for each dataset and
-        /// survives switching between datasets within the same session.
-        /// In-memory only - intentionally not persisted to disk, per-session
-        /// is the current scope.
-        /// </summary>
-        private class ShuffleHistory
-        {
-            public List<ShuffleState> States = new();
-            public int CurrentIndex = -1; // -1 = no shuffle applied yet for this dataset
-        }
-
-        private readonly Dictionary<string, ShuffleHistory> m_ShuffleHistoryByDataset = new();
-
-        private ShuffleHistory GetOrCreateShuffleHistory()
-        {
-            if (LoadedDataset == null)
-                return null;
-
-            string key = LoadedDataset.Name;
-
-            if (!m_ShuffleHistoryByDataset.TryGetValue(key, out ShuffleHistory history))
-            {
-                history = new ShuffleHistory();
-                m_ShuffleHistoryByDataset[key] = history;
-            }
-
-            return history;
-        }
-
-        private void ApplyShuffleState(ShuffleState state)
-        {
-            ApplyShuffleFields(state);
-            OnPlotSettingsChanged?.Invoke();
-        }
-
-        // Writes every field of a ShuffleState onto the plot settings without raising events.
-        // A changed Time column restarts the scrub and stops playback, like RequestTimeColumnRpc.
-        private void ApplyShuffleFields(ShuffleState state)
-        {
-            bool timeChanged = TimeColumnIndex != state.Time;
-
-            XColumnIndex = state.X;
-            YColumnIndex = state.Y;
-            ZColumnIndex = state.Z;
-            SizeColumnIndex = state.Size;
-            ColorColumnIndex = state.Colour;
-            if (GlyphColumnIndex != state.Glyph)
-                GlyphRanges.Clear(); // ranges are values of the old glyph column
-            GlyphColumnIndex = state.Glyph;
-            TimeColumnIndex = state.Time;
-
-            if (timeChanged)
-            {
-                TimeScrub = 0f;
-                IsPlaying = false;
-            }
-        }
-
-        private ShuffleState CaptureShuffleState() => new ShuffleState
-        {
-            X = XColumnIndex,
-            Y = YColumnIndex,
-            Z = ZColumnIndex,
-            Size = SizeColumnIndex,
-            Colour = ColorColumnIndex,
-            Glyph = GlyphColumnIndex,
-            Time = TimeColumnIndex
-        };
-
-        private static int GetShuffleField(ShuffleState state, MappingTarget target)
-        {
-            switch (target)
-            {
-                case MappingTarget.X: return state.X;
-                case MappingTarget.Y: return state.Y;
-                case MappingTarget.Z: return state.Z;
-                case MappingTarget.Size: return state.Size;
-                case MappingTarget.Colour: return state.Colour;
-                case MappingTarget.Glyph: return state.Glyph;
-                case MappingTarget.Time: return state.Time;
-                default: return -1;
-            }
-        }
-
-        private static void SetShuffleField(ref ShuffleState state, MappingTarget target, int columnIndex)
-        {
-            switch (target)
-            {
-                case MappingTarget.X: state.X = columnIndex; break;
-                case MappingTarget.Y: state.Y = columnIndex; break;
-                case MappingTarget.Z: state.Z = columnIndex; break;
-                case MappingTarget.Size: state.Size = columnIndex; break;
-                case MappingTarget.Colour: state.Colour = columnIndex; break;
-                case MappingTarget.Glyph: state.Glyph = columnIndex; break;
-                case MappingTarget.Time: state.Time = columnIndex; break;
-            }
         }
 
         public event Action OnDatasetLoaded;
@@ -556,6 +249,7 @@ namespace DataViz
                 return;
             }
 
+            EnsureStack();
             LoadShuffleLockPrefs();
         }
 
@@ -569,6 +263,18 @@ namespace DataViz
         }
 
         private void Start()
+        {
+            try
+            {
+                LoadStartupDataset();
+            }
+            finally
+            {
+                HasInitialised = true;
+            }
+        }
+
+        private void LoadStartupDataset()
         {
             // Launched from the Start scene (import wizard or a default-on-load dataset): load that
             // dataset, with the wizard's first X/Y/Z (FirstAxisMapping) set before the plot builds.
@@ -629,160 +335,91 @@ namespace DataViz
             }
         }
 
+        /// <summary>
+        /// Loads fileName (re-read from disk, columnar first, then the CSV fallback) into the edit
+        /// layer, keeping its mappings, and raises OnDatasetLoaded, OnBookmarksChanged and
+        /// OnPlotSettingsChanged. Creates the base layer first when the plot is empty. On failure
+        /// the layer's dataset becomes null and no event is raised (as before layers).
+        /// </summary>
         public void LoadLocalDataset(string fileName)
         {
-            // Try to load as columnar dataset first
-            if (!fileName.EndsWith(".cdataset"))
+            PlotLayer target;
+            if (Stack.Count == 0)
             {
-                fileName = fileName.Replace(".csv", ".cdataset").Replace(".dataset", ".cdataset");
+                target = NewBaseLayer();
+                Stack.ResetTo(target);
             }
-
-            LoadedDataset = ColumnarBinaryImporter.Load(fileName);
-
-            if (LoadedDataset != null)
+            else if (!HasEditLayer)
             {
-                CurrentDatasetName = fileName;
-
-                Debug.Log(
-                    $"Loaded columnar dataset '{LoadedDataset.Name}' " +
-                    $"({LoadedDataset.RowCount} rows, {LoadedDataset.ColumnCount} columns)"
-                );
-
-                OnDatasetLoaded?.Invoke();
-                OnBookmarksChanged?.Invoke();
-                OnPlotSettingsChanged?.Invoke();
+                Debug.LogWarning($"[MultiplayerScatterplotManager] LoadLocalDataset({fileName}): the layer being edited no longer exists.");
+                return;
+            }
+            else if (EditLayer.Kind == LayerKind.Computed)
+            {
+                PostPlotMessage("A computed layer has no dataset of its own", PlotMessageKind.Refused);
+                return;
             }
             else
             {
-                Debug.LogError(
-                    $"[MultiplayerScatterplotManager] FALLING BACK TO SLOW CSV IMPORT\n" +
-                    $"Columnar binary dataset failed to load: '{fileName}'\n" +
-                    $"This dataset will be parsed via the legacy row-based CSVImporter, " +
-                    $"which is significantly slower and was NOT the intended fast path.\n" +
-                    $"Check that a matching .cdataset file exists in " +
-                    $"Assets/StreamingAssets/DataCSV/ProcessedData/ (run preprocess_csv_columnar.py if not)."
-                );
-
-                // Fallback to CSV importer
-                string csvFileName = fileName.Replace(".cdataset", ".csv");
-                string csvPath = Path.Combine(Application.streamingAssetsPath, "DataCSV", csvFileName);
-                Dataset legacyDataset = CSVImporter.Load(csvPath);
-
-                if (legacyDataset != null)
-                {
-                    // Convert to columnar format (simple wrapper for now)
-                    LoadedDataset = ConvertToColumnar(legacyDataset);
-                    CurrentDatasetName = csvFileName;
-
-                    Debug.Log(
-                        $"Loaded legacy CSV dataset as columnar '{LoadedDataset.Name}' " +
-                        $"({LoadedDataset.RowCount} rows, {LoadedDataset.ColumnCount} columns)"
-                    );
-
-                    OnDatasetLoaded?.Invoke();
-                    OnBookmarksChanged?.Invoke();
-                    OnPlotSettingsChanged?.Invoke();
-                }
-                else
-                {
-                    Debug.LogError($"Failed to load dataset: {fileName}");
-                }
-            }
-        }
-
-        private DatasetColumnar ConvertToColumnar(Dataset legacyDataset)
-        {
-            // Simple conversion from legacy Dataset to DatasetColumnar
-            // This is a temporary compatibility layer
-            DatasetColumnar columnar = new DatasetColumnar(legacyDataset.Name, legacyDataset.RowCount, legacyDataset.ColumnCount);
-
-            // Copy column metadata
-            foreach (var legacyColumn in legacyDataset.Columns)
-            {
-                columnar.Columns.Add(legacyColumn);
-                columnar.ColumnMapping[legacyColumn.Name] = columnar.Columns.Count - 1;
+                target = EditLayer;
             }
 
-            // Extract column data from rows
-            for (int colIndex = 0; colIndex < legacyDataset.ColumnCount; colIndex++)
-            {
-                DatasetColumn column = legacyDataset.Columns[colIndex];
-
-                if (column.IsNumeric)
-                {
-                    float[] numericData = new float[legacyDataset.RowCount];
-                    for (int rowIndex = 0; rowIndex < legacyDataset.RowCount; rowIndex++)
-                    {
-                        numericData[rowIndex] = legacyDataset.Rows[rowIndex].GetNumericValue(colIndex);
-                    }
-                    columnar.SetNumericColumn(colIndex, numericData);
-                }
-                else if (column.IsCategorical)
-                {
-                    // Build category table
-                    string[] categoryTable = new string[column.UniqueCount];
-                    int idx = 0;
-                    foreach (string cat in column.UniqueValues)
-                    {
-                        categoryTable[idx++] = cat;
-                    }
-
-                    int[] categoryIndices = new int[legacyDataset.RowCount];
-                    for (int rowIndex = 0; rowIndex < legacyDataset.RowCount; rowIndex++)
-                    {
-                        string rawValue = legacyDataset.Rows[rowIndex].GetRawValue(colIndex);
-                        int catIndex = Array.IndexOf(categoryTable, rawValue);
-                        categoryIndices[rowIndex] = catIndex >= 0 ? catIndex : 0;
-                    }
-
-                    columnar.SetCategoricalColumn(colIndex, categoryIndices, categoryTable);
-                }
-            }
-
-            columnar.FinalizeDatasetMetadata();
-            return columnar;
+            LoadDatasetInto(target, fileName);
         }
 
         public void RequestLoadDatasetRpc(string fileName)
         {
-            if (ForwardToHost(PlotOp.LoadDataset, text: fileName)) return;
+            if (ForwardPlotOp(PlotOp.LoadDataset, text: fileName)) return;
 
-            LoadLocalDataset(fileName);
+            // "New plot": the stack becomes its first layer alone (that object is kept, so PointSize
+            // and SizeMapped survive as before), loaded with fileName and reset below. Adding a
+            // dataset on top of the plot is RequestAddDatasetLayerRpc.
+            bool structureChanged = ResetStackForNewPlot(out PlotLayer baseLayer);
+            bool loaded = LoadDatasetInto(baseLayer, fileName);
 
-            if (LoadedDataset != null)
+            if (loaded)
             {
-                XColumnIndex = 0;
-                YColumnIndex = Mathf.Clamp(
+                PlotLayer layer = baseLayer;
+                layer.XColumnIndex = 0;
+                layer.YColumnIndex = Mathf.Clamp(
                     1,
                     0,
-                    LoadedDataset.ColumnCount - 1
+                    layer.Dataset.ColumnCount - 1
                 );
 
-                ZColumnIndex = Mathf.Clamp(
+                layer.ZColumnIndex = Mathf.Clamp(
                     2,
                     0,
-                    LoadedDataset.ColumnCount - 1
+                    layer.Dataset.ColumnCount - 1
                 );
 
-                ColorColumnIndex = -1;
-                TimeColumnIndex = -1;
+                layer.ColorColumnIndex = -1;
+                layer.TimeColumnIndex = -1;
                 TimeScrub = 0f;
                 IsPlaying = false;
-                GlyphColumnIndex = -1;
-                GlyphAssignments.Clear();
-                GlyphRanges.Clear();
+                layer.GlyphColumnIndex = -1;
+                layer.GlyphAssignments.Clear();
+                layer.GlyphRanges.Clear();
                 // Filter/size column indices from the previous dataset would point at unrelated
                 // columns here (and filtering is active for any entry), so reset them.
-                Filters.Clear();
-                SizeColumnIndex = -1;
+                layer.Filters.Clear();
+                layer.SizeColumnIndex = -1;
+                Stack.Touch();
 
+                if (structureChanged)
+                    OnLayersChanged?.Invoke();
                 OnPlotSettingsChanged?.Invoke();
+            }
+            else if (structureChanged)
+            {
+                RaiseChanged(true);
             }
         }
 
         public void RequestXColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.XColumn, columnIndex)) return;
+            if (RefuseLayerEdit() || !CheckAxisMapping(0, columnIndex)) return;
 
             XColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
@@ -791,6 +428,7 @@ namespace DataViz
         public void RequestYColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.YColumn, columnIndex)) return;
+            if (RefuseLayerEdit() || !CheckAxisMapping(1, columnIndex)) return;
 
             YColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
@@ -799,6 +437,7 @@ namespace DataViz
         public void RequestZColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.ZColumn, columnIndex)) return;
+            if (RefuseLayerEdit() || !CheckAxisMapping(2, columnIndex)) return;
 
             ZColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
@@ -807,6 +446,7 @@ namespace DataViz
         public void RequestColorColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.ColourColumn, columnIndex)) return;
+            if (RefuseLayerEdit()) return;
 
             ColorColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
@@ -815,6 +455,7 @@ namespace DataViz
         public void RequestPointSizeRpc(float size)
         {
             if (ForwardToHost(PlotOp.PointSize, floatArg: size)) return;
+            if (RefuseLayerEdit()) return;
 
             PointSize = Mathf.Clamp(size, 0f, MaxPointSize);
             OnPlotSettingsChanged?.Invoke();
@@ -823,6 +464,7 @@ namespace DataViz
         public void RequestTimeColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.TimeColumn, columnIndex)) return;
+            if (RefuseLayerEdit()) return;
 
             TimeColumnIndex = columnIndex;
             IsPlaying = false; // stop any running playback when the column changes
@@ -831,7 +473,7 @@ namespace DataViz
 
         public void RequestTimeScrubRpc(float normalizedValue)
         {
-            if (ForwardToHost(PlotOp.TimeScrub, floatArg: normalizedValue)) return;
+            if (ForwardPlotOp(PlotOp.TimeScrub, floatArg: normalizedValue)) return;
 
             TimeScrub = Mathf.Clamp01(normalizedValue);
             OnPlotSettingsChanged?.Invoke();
@@ -839,7 +481,7 @@ namespace DataViz
 
         public void RequestPlaybackToggleRpc(bool isPlaying)
         {
-            if (ForwardToHost(PlotOp.Playback, boolArg: isPlaying)) return;
+            if (ForwardPlotOp(PlotOp.Playback, boolArg: isPlaying)) return;
 
             IsPlaying = isPlaying;
 
@@ -855,7 +497,7 @@ namespace DataViz
         /// <summary>Sets PlaybackRate, clamped to [MinPlaybackRate, MaxPlaybackRate]. Shared; the scrub position is kept.</summary>
         public void RequestPlaybackRateRpc(float rate)
         {
-            if (ForwardToHost(PlotOp.PlaybackRate, floatArg: rate)) return;
+            if (ForwardPlotOp(PlotOp.PlaybackRate, floatArg: rate)) return;
 
             if (!float.IsFinite(rate))
                 return;
@@ -866,41 +508,21 @@ namespace DataViz
 
         /// <summary>
         /// Scrub units (0-1) per second that playback advances: the 1x base times PlaybackRate.
-        /// 1x is real time (1 / time range in seconds) when the time column is seconds-like (DateTime,
-        /// stored as seconds, or a numeric column named "...time..."), otherwise PlaybackSpeed.
+        /// 1x is real time (1 / clock range in seconds) when every layer's time column is
+        /// seconds-like (DateTime, stored as seconds, or a numeric column named "...time..."),
+        /// otherwise PlaybackSpeed. The clock range is GetClockRange (one layer: its column's range).
         /// </summary>
         public float EffectiveScrubPerSecond()
         {
             float baseSpeed = PlaybackSpeed;
-            DatasetColumn column = LoadedDataset?.GetColumn(TimeColumnIndex);
-            if (column != null && column.IsNumeric && IsSecondsLikeTimeColumn(column))
+            if (GetClockRange(out float min, out float max) && PlotClock.SecondsLike(Layers))
             {
-                float range = column.MaxValue - column.MinValue;
+                float range = max - min;
                 if (range > 0f && range <= k_MaxRealTimeRangeSeconds)
                     baseSpeed = 1f / range;
             }
 
             return baseSpeed * PlaybackRate;
-        }
-
-        // DateTime columns are stored as seconds (preprocess_csv_columnar.py). A numeric column counts
-        // when its name contains "time", unless the name says milliseconds.
-        private static bool IsSecondsLikeTimeColumn(DatasetColumn column)
-        {
-            if (column.Type == DataValueType.DateTime)
-                return true;
-
-            string name = column.Name;
-            if (string.IsNullOrEmpty(name) || name.IndexOf("time", StringComparison.OrdinalIgnoreCase) < 0)
-                return false;
-
-            bool milliseconds =
-                name.IndexOf("milli", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                name.IndexOf("msec", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                name.IndexOf("(ms)", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                name.IndexOf("[ms]", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                name.EndsWith("ms", StringComparison.OrdinalIgnoreCase);
-            return !milliseconds;
         }
 
         public void RequestTooltipsToggleRpc(bool showTooltips)
@@ -918,6 +540,7 @@ namespace DataViz
         public void RequestFilterIndexRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.FilterColumn, columnIndex)) return;
+            if (RefuseLayerEdit()) return;
 
             if (columnIndex < 0)
             {
@@ -944,6 +567,7 @@ namespace DataViz
         public void RequestFilterLabelRpc(string filterLabel)
         {
             if (ForwardToHost(PlotOp.FilterLabel, text: filterLabel)) return;
+            if (RefuseLayerEdit()) return;
 
             if (Filters.Count == 0)
                 return;
@@ -967,6 +591,7 @@ namespace DataViz
                 return false;
 
             if (ForwardToHost(PlotOp.AddFilter, columnIndex, text: filterLabel)) return true;
+            if (RefuseLayerEdit()) return false;
 
             Filters.Add(new FilterEntry { ColumnIndex = columnIndex, Label = filterLabel });
             OnPlotSettingsChanged?.Invoke();
@@ -976,6 +601,7 @@ namespace DataViz
         public void RequestRemoveFilterRpc(int filterIndex)
         {
             if (ForwardToHost(PlotOp.RemoveFilter, filterIndex)) return;
+            if (RefuseLayerEdit()) return;
 
             if (filterIndex < 0 || filterIndex >= Filters.Count)
                 return;
@@ -987,6 +613,7 @@ namespace DataViz
         public void RequestClearFiltersRpc()
         {
             if (ForwardToHost(PlotOp.ClearFilters)) return;
+            if (RefuseLayerEdit()) return;
 
             Filters.Clear();
             OnPlotSettingsChanged?.Invoke();
@@ -1006,7 +633,8 @@ namespace DataViz
                 return false;
             }
 
-            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForFilterRanges(ranges))) return true;
+            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForFilterRanges(ranges, EditLayerRequestId))) return true;
+            if (RefuseLayerEdit()) return false;
 
             DatasetColumn column = Filters.Count > 0 ? LoadedDataset?.GetColumn(Filters[0].ColumnIndex) : null;
             if (column == null || !column.IsNumeric)
@@ -1060,6 +688,7 @@ namespace DataViz
         public void RequestSizeColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.SizeColumn, columnIndex)) return;
+            if (RefuseLayerEdit()) return;
 
             SizeColumnIndex = columnIndex;
             OnPlotSettingsChanged?.Invoke();
@@ -1068,6 +697,7 @@ namespace DataViz
         public void RequestSizeMappedRpc(bool mapped)
         {
             if (ForwardToHost(PlotOp.SizeMapped, boolArg: mapped)) return;
+            if (RefuseLayerEdit()) return;
 
             SizeMapped = mapped;
             OnPlotSettingsChanged?.Invoke();
@@ -1076,6 +706,7 @@ namespace DataViz
         public void RequestGlyphColumnRpc(int columnIndex)
         {
             if (ForwardToHost(PlotOp.GlyphColumn, columnIndex)) return;
+            if (RefuseLayerEdit()) return;
 
             // Ranges are values of the old glyph column: a new label starts with none.
             if (columnIndex != GlyphColumnIndex)
@@ -1095,6 +726,7 @@ namespace DataViz
                 return;
 
             if (ForwardToHost(PlotOp.GlyphAssignment, glyphIndex, text: label)) return;
+            if (RefuseLayerEdit()) return;
 
             GlyphAssignment existing = GlyphAssignments.Find(a => a.Label == label);
             if (existing != null)
@@ -1110,57 +742,27 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Looks up the manually-assigned glyph for a label, or defaultGlyph if the
-        /// label has no assignment yet (e.g. never touched by a user this session).
+        /// Looks up the manually-assigned glyph for a label on the edit layer, or defaultGlyph if
+        /// the label has no assignment yet (e.g. never touched by a user this session).
         /// </summary>
-        public int GetGlyphForLabel(string label, int defaultGlyph = 0)
-        {
-            if (string.IsNullOrEmpty(label))
-                return defaultGlyph;
-
-            GlyphAssignment match = GlyphAssignments.Find(a => a.Label == label);
-            return match != null ? match.GlyphIndex : defaultGlyph;
-        }
+        public int GetGlyphForLabel(string label, int defaultGlyph = 0) =>
+            MappingLayer.GetGlyphForLabel(label, defaultGlyph);
 
         /// <summary>
-        /// Glyph for one row of the glyph column: its value's own assignment if it has one,
-        /// otherwise the glyph of the range its numeric value falls in (pass NaN for a
+        /// Glyph for one row of the edit layer's glyph column: its value's own assignment if it
+        /// has one, otherwise the glyph of the range its numeric value falls in (pass NaN for a
         /// categorical column), otherwise defaultGlyph. Rows with no value (hasValue false)
         /// always get defaultGlyph.
         /// </summary>
-        public int GetGlyphForRow(string label, bool hasValue, float numericValue, int defaultGlyph = 0)
-        {
-            if (!hasValue)
-                return defaultGlyph;
-
-            GlyphAssignment match = string.IsNullOrEmpty(label)
-                ? null
-                : GlyphAssignments.Find(a => a.Label == label);
-            if (match != null)
-                return match.GlyphIndex;
-
-            int rangeIndex = GetGlyphRangeIndex(numericValue);
-            return rangeIndex >= 0 ? GlyphRanges[rangeIndex].glyphIndex : defaultGlyph;
-        }
+        public int GetGlyphForRow(string label, bool hasValue, float numericValue, int defaultGlyph = 0) =>
+            MappingLayer.GetGlyphForRow(label, hasValue, numericValue, defaultGlyph);
 
         /// <summary>
-        /// Index in GlyphRanges of the range containing value (min and max inclusive), or -1.
-        /// GlyphRanges is sorted by min, so a value on an edge two ranges share resolves to
-        /// the lower range.
+        /// Index in the edit layer's GlyphRanges of the range containing value (min and max
+        /// inclusive), or -1. GlyphRanges is sorted by min, so a value on an edge two ranges
+        /// share resolves to the lower range.
         /// </summary>
-        public int GetGlyphRangeIndex(float value)
-        {
-            if (float.IsNaN(value))
-                return -1;
-
-            for (int i = 0; i < GlyphRanges.Count; i++)
-            {
-                if (value >= GlyphRanges[i].min && value <= GlyphRanges[i].max)
-                    return i;
-            }
-
-            return -1;
-        }
+        public int GetGlyphRangeIndex(float value) => MappingLayer.GetGlyphRangeIndex(value);
 
         /// <summary>
         /// Replaces every glyph range with ranges (null or empty clears them). Rejected, with
@@ -1176,7 +778,8 @@ namespace DataViz
                 return false;
             }
 
-            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForGlyphRanges(ranges))) return true;
+            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForGlyphRanges(ranges, EditLayerRequestId))) return true;
+            if (RefuseLayerEdit()) return false;
 
             GlyphRanges = new List<GlyphRange>();
             if (ranges != null)
@@ -1268,42 +871,6 @@ namespace DataViz
             return true;
         }
 
-
-        /// <summary>
-        /// Adds or removes a column from the shuffle blacklist by name. Does
-        /// NOT affect manual selection via a dropdown - a blacklisted column
-        /// remains fully choosable by hand, it's only skipped by the random
-        /// shuffle picker.
-        /// </summary>
-        public void RequestSetColumnBlacklistedRpc(string columnName, bool blacklisted)
-        {
-            if (string.IsNullOrEmpty(columnName))
-                return;
-
-            HashSet<string> blacklist = GetBlacklistForCurrentDataset();
-
-            if (blacklisted)
-            {
-                blacklist.Add(columnName);
-            }
-            else
-            {
-                blacklist.Remove(columnName);
-            }
-
-            if (LoadedDataset != null)
-                ColumnPrefsStore.SetBlacklist(LoadedDataset.Name, blacklist);
-            OnPlotSettingsChanged?.Invoke();
-        }
-
-        public bool IsColumnBlacklisted(string columnName)
-        {
-            if (string.IsNullOrEmpty(columnName))
-                return false;
-
-            return GetBlacklistForCurrentDataset().Contains(columnName);
-        }
-
         /// <summary>
         /// Adds or removes a column bookmark by name (per-dataset). Bookmarks are persisted
         /// separately to disk so they survive restarts.
@@ -1368,297 +935,36 @@ namespace DataViz
             OnPlotSettingsChanged?.Invoke();
         }
 
-        /// <summary>
-        /// Shuffle: gives every UNLOCKED field (see IsFieldLocked) a new random label, walking the
-        /// fields in the fixed order ShuffleLocks.ShuffleOrder (X, Y, Z, Size, Colour, Glyph, Time).
-        /// Locked fields keep their label. Rules:
-        ///   - a field only draws labels it accepts (ColumnMappingRules.Accepts): X/Y/Z/Size/Time
-        ///     numeric or DateTime, Colour any label, Glyph categorical. Size only while Mapped.
-        ///   - X, Y, Z and Size never share a label (locked ones are reserved first). Colour and
-        ///     Glyph may repeat an axis label.
-        ///   - this dataset's blacklisted labels are skipped for every field.
-        ///   - a field with no valid label left keeps its current one; the others still shuffle.
-        /// X/Y/Z/Size picks stay weighted by value range (MaxValue - MinValue): in high-dimensional
-        /// data that mixes a few meaningful columns with many near-constant ones, a wider range
-        /// tends to mean "carries real structure". Colour, Glyph and Time pick uniformly.
-        /// Each press is recorded in this dataset's shuffle history (all seven fields), preceded by
-        /// the settings it replaced when those were not already the current entry, so << always
-        /// returns to what was shown before the press.
-        /// </summary>
-        public void RequestShuffleColumnsRpc()
-        {
-            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForShuffle(LockedFieldMask(), GetBlacklistForCurrentDataset()))) return;
-
-            if (LoadedDataset == null || LoadedDataset.ColumnCount == 0)
-                return;
-
-            int columnCount = LoadedDataset.ColumnCount;
-
-            // Only this dataset's own blacklist entries apply.
-            HashSet<int> blacklisted = new HashSet<int>();
-            foreach (string blacklistedName in m_ShuffleBlacklistOverride ?? GetBlacklistForCurrentDataset())
-            {
-                if (LoadedDataset.ColumnMapping.TryGetValue(blacklistedName, out int blacklistedIdx))
-                    blacklisted.Add(blacklistedIdx);
-            }
-
-            ShuffleState before = CaptureShuffleState();
-            ShuffleState next = before;
-
-            // X, Y, Z and Size share one pool of labels: a label one of them holds is off-limits to
-            // the others. Locked fields keep theirs, so those are reserved before anything is picked.
-            // Size's label only counts while Size is Mapped (it isn't shown otherwise).
-            HashSet<int> axisLabelsInUse = new HashSet<int>();
-            // Current labels of the unlocked X/Y/Z/Size fields: avoided while there is an
-            // alternative, so an earlier field doesn't take the label a later one may fall back on.
-            HashSet<int> unlockedAxisLabels = new HashSet<int>();
-            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
-            {
-                if (!ShuffleLocks.IsAxisLike(target))
-                    continue;
-
-                int current = GetShuffleField(before, target);
-                if (current < 0 || (target == MappingTarget.Size && !SizeMapped))
-                    continue;
-
-                if (IsShuffleFieldLocked(target))
-                    axisLabelsInUse.Add(current);
-                else
-                    unlockedAxisLabels.Add(current);
-            }
-
-            List<int> candidates = new List<int>();
-            List<int> preferred = new List<int>();
-
-            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
-            {
-                if (IsShuffleFieldLocked(target))
-                    continue;
-
-                bool axisLike = ShuffleLocks.IsAxisLike(target);
-                int current = GetShuffleField(before, target);
-
-                candidates.Clear();
-                preferred.Clear();
-                for (int i = 0; i < columnCount; i++)
-                {
-                    if (i == current || blacklisted.Contains(i))
-                        continue;
-                    if (axisLike && axisLabelsInUse.Contains(i))
-                        continue;
-                    if (!ColumnMappingRules.Accepts(target, LoadedDataset.GetColumn(i), this))
-                        continue;
-
-                    candidates.Add(i);
-                    if (!axisLike || !unlockedAxisLabels.Contains(i))
-                        preferred.Add(i);
-                }
-
-                List<int> pool = preferred.Count > 0 ? preferred : candidates;
-                int picked = current; // no valid label left: keep the current one
-                if (pool.Count > 0)
-                    picked = axisLike ? WeightedRandomPick(pool) : pool[UnityEngine.Random.Range(0, pool.Count)];
-
-                if (axisLike)
-                {
-                    unlockedAxisLabels.Remove(current);
-                    if (picked >= 0)
-                        axisLabelsInUse.Add(picked);
-                }
-
-                SetShuffleField(ref next, target, picked);
-            }
-
-            if (next.SameAs(before))
-            {
-                // Everything locked (or nothing valid to pick): nothing changes, nothing recorded.
-                Debug.Log("[MultiplayerScatterplotManager] Shuffle: no unlocked field could change.");
-                return;
-            }
-
-            ApplyShuffleFields(next);
-
-            // Save into this dataset's shuffle history. If the user had navigated back and is now
-            // shuffling again, this is a new branch - discard the old "forward" states, same as
-            // browser back/forward or standard undo/redo semantics. The settings this press
-            // replaced are recorded first unless they already are the current entry (e.g. the
-            // first shuffle, or after the user changed a mapping by hand).
-            ShuffleHistory history = GetOrCreateShuffleHistory();
-            if (history != null)
-            {
-                if (history.CurrentIndex < history.States.Count - 1)
-                {
-                    history.States.RemoveRange(history.CurrentIndex + 1, history.States.Count - history.CurrentIndex - 1);
-                }
-
-                if (history.CurrentIndex < 0 || !history.States[history.CurrentIndex].SameAs(before))
-                    history.States.Add(before);
-
-                history.States.Add(next);
-                history.CurrentIndex = history.States.Count - 1;
-            }
-
-            Debug.Log(
-                $"[MultiplayerScatterplotManager] Shuffled -> " +
-                $"X={ColumnNameOrNone(XColumnIndex)}, " +
-                $"Y={ColumnNameOrNone(YColumnIndex)}, " +
-                $"Z={ColumnNameOrNone(ZColumnIndex)}, " +
-                $"Size={ColumnNameOrNone(SizeColumnIndex)}, " +
-                $"Color={ColumnNameOrNone(ColorColumnIndex)}, " +
-                $"Glyph={ColumnNameOrNone(GlyphColumnIndex)}, " +
-                $"Time={ColumnNameOrNone(TimeColumnIndex)}"
-            );
-
-            OnPlotSettingsChanged?.Invoke();
-        }
-
-        private string ColumnNameOrNone(int columnIndex) =>
-            columnIndex >= 0 && LoadedDataset != null ? LoadedDataset.GetColumn(columnIndex)?.Name ?? "None" : "None";
-
-        /// <summary>
-        /// Steps back to the previous shuffle result for the current dataset,
-        /// if one exists. Does nothing (no-op, logged) if already at the
-        /// oldest saved shuffle or if this dataset has never been shuffled.
-        /// </summary>
-        public void RequestShuffleBackwardRpc()
-        {
-            if (ForwardToHost(PlotOp.ShuffleBackward)) return;
-
-            ShuffleHistory history = GetOrCreateShuffleHistory();
-
-            if (history == null || history.CurrentIndex <= 0)
-            {
-                Debug.Log("[MultiplayerScatterplotManager] ShuffleBackward: nothing further back to go to.");
-                return;
-            }
-
-            history.CurrentIndex--;
-            ApplyShuffleState(history.States[history.CurrentIndex]);
-        }
-
-        /// <summary>
-        /// Steps forward to a more recent shuffle result for the current
-        /// dataset, if the user had previously navigated backward. Does
-        /// nothing if already at the newest saved shuffle.
-        /// </summary>
-        public void RequestShuffleForwardRpc()
-        {
-            if (ForwardToHost(PlotOp.ShuffleForward)) return;
-
-            ShuffleHistory history = GetOrCreateShuffleHistory();
-
-            if (history == null || history.CurrentIndex >= history.States.Count - 1)
-            {
-                Debug.Log("[MultiplayerScatterplotManager] ShuffleForward: nothing further forward to go to.");
-                return;
-            }
-
-            history.CurrentIndex++;
-            ApplyShuffleState(history.States[history.CurrentIndex]);
-        }
-
-        /// <summary>
-        /// Picks one column index from pool, weighted by ColumnShuffleWeight. Falls back to a
-        /// uniform pick if every weight is zero. pool must not be empty.
-        /// </summary>
-        private int WeightedRandomPick(List<int> pool)
-        {
-            float totalWeight = 0f;
-            foreach (int columnIndex in pool)
-                totalWeight += ColumnShuffleWeight(columnIndex);
-
-            if (totalWeight <= 0f)
-                return pool[UnityEngine.Random.Range(0, pool.Count)];
-
-            float roll = UnityEngine.Random.Range(0f, totalWeight);
-            float cumulative = 0f;
-
-            foreach (int columnIndex in pool)
-            {
-                cumulative += ColumnShuffleWeight(columnIndex);
-                if (roll <= cumulative)
-                    return columnIndex;
-            }
-
-            return pool[pool.Count - 1];
-        }
-
-        // Numeric (incl. DateTime) columns weigh their value range, so wide-range columns are
-        // picked more often than near-constant ones; anything else gets a flat weight.
-        private float ColumnShuffleWeight(int columnIndex)
-        {
-            DatasetColumn col = LoadedDataset?.GetColumn(columnIndex);
-
-            if (col == null)
-                return 0f;
-
-            if (col.IsNumeric)
-                return Mathf.Max(0.0001f, col.MaxValue - col.MinValue);
-
-            return 1f;
-        }
-
         // ---- Multiplayer -------------------------------------------------------------------------
-        // Every shared Request...Rpc starts with a ForwardToHost guard: on a connected non-host
-        // client the change is sent to the host (NetworkScatterplotState), which applies it and
-        // replicates the result to everyone, so the method returns without applying it locally.
-        // Offline and on the host the guard is false and the method behaves exactly as before.
+        // Every shared Request…Rpc starts with a forward guard: on a connected non-host client the
+        // change is sent to the host (NetworkScatterplotState), which applies it and replicates the
+        // result to everyone, so the method returns without applying it locally. Offline and on the
+        // host the guard is false and the method behaves exactly as before. Layer-scoped requests
+        // carry the edit layer's id (ForwardToHost); plot-level ones carry none (ForwardPlotOp).
         // Local-only state (bookmarks, blacklist, shuffle locks, tooltips) is never forwarded.
 
-        private static bool ForwardToHost(PlotOp op, int intArg = 0, float floatArg = 0f, bool boolArg = false, string text = null) =>
+        private bool ForwardToHost(PlotOp op, int intArg = 0, float floatArg = 0f, bool boolArg = false, string text = null) =>
+            NetworkScatterplotState.TryForwardToHost(new PlotRequest(op, intArg, floatArg, boolArg, text, EditLayerRequestId));
+
+        private static bool ForwardPlotOp(PlotOp op, int intArg = 0, float floatArg = 0f, bool boolArg = false, string text = null) =>
             NetworkScatterplotState.TryForwardToHost(new PlotRequest(op, intArg, floatArg, boolArg, text));
 
         /// <summary>
-        /// Client side: shows the host's shared settings without forwarding anything, then raises
-        /// OnPlotSettingsChanged like a local change. The caller loads the host's dataset first.
+        /// Client side (and undo): shows the snapshot's shared state without forwarding anything:
+        /// rebuilds the layer stack (PlotSnapshot.WriteTo), then raises the events in RaiseChanged
+        /// order, never part-way through. OnDatasetLoaded fires only when the active dataset changed.
         /// </summary>
         public void ApplyNetworkSnapshot(PlotSnapshot snapshot, float timeScrub)
         {
+            int before = LayerLevelSignature();
             snapshot.WriteTo(this, timeScrub);
-            OnPlotSettingsChanged?.Invoke();
+            TrimDatasets();
+            RaiseChanged(LayerLevelSignature() != before);
         }
-
-        // Set only while the host runs a shuffle a client asked for: that client's shuffle locks
-        // (one bit per MappingTarget) and blacklist replace the host's own.
-        private int? m_ShuffleLockMaskOverride;
-        private IReadOnlyCollection<string> m_ShuffleBlacklistOverride;
-
-        /// <summary>Host side: RequestShuffleColumnsRpc with a client's shuffle locks and blacklist.</summary>
-        public void RequestShuffleColumnsForClient(int lockedFieldMask, IReadOnlyCollection<string> blacklist)
-        {
-            m_ShuffleLockMaskOverride = lockedFieldMask;
-            m_ShuffleBlacklistOverride = blacklist;
-            try
-            {
-                RequestShuffleColumnsRpc();
-            }
-            finally
-            {
-                m_ShuffleLockMaskOverride = null;
-                m_ShuffleBlacklistOverride = null;
-            }
-        }
-
-        private int LockedFieldMask()
-        {
-            int mask = 0;
-            foreach (MappingTarget target in ShuffleLocks.ShuffleOrder)
-            {
-                if (IsFieldLocked(target))
-                    mask |= 1 << (int)target;
-            }
-
-            return mask;
-        }
-
-        private bool IsShuffleFieldLocked(MappingTarget target) =>
-            m_ShuffleLockMaskOverride is int mask
-                ? !CanUnlockField(target) || (mask & (1 << (int)target)) != 0
-                : IsFieldLocked(target);
 
         private void Update()
         {
-            if (!IsPlaying || TimeColumnIndex < 0)
+            if (!IsPlaying || !AnyLayerHasTimeColumn())
                 return;
 
             TimeScrub += EffectiveScrubPerSecond() * Time.deltaTime;
@@ -1672,5 +978,27 @@ namespace DataViz
             OnPlotSettingsChanged?.Invoke();
         }
 
+        // ---- seeds ----------------------------------------------------------------------------
+
+        // A base layer built from the scene-serialised seeds (what the plot showed before layers).
+        private PlotLayer SeedLayer(string id) => new PlotLayer
+        {
+            Id = id,
+            Name = string.IsNullOrEmpty(m_InitialDatasetName) ? "Layer 1" : Path.GetFileNameWithoutExtension(m_InitialDatasetName),
+            Kind = LayerKind.Dataset,
+            DatasetName = m_InitialDatasetName ?? "",
+            XColumnIndex = m_InitialXColumn,
+            YColumnIndex = m_InitialYColumn,
+            ZColumnIndex = m_InitialZColumn,
+            ColorColumnIndex = m_InitialColorColumn,
+            PointSize = m_InitialPointSize,
+            TimeColumnIndex = m_InitialTimeColumn,
+            SizeMapped = m_InitialSizeMapped,
+            SizeColumnIndex = m_InitialSizeColumn,
+            GlyphColumnIndex = m_InitialGlyphColumn,
+            Filters = PlotLayer.CopyFilters(m_InitialFilters),
+            GlyphAssignments = PlotLayer.CopyAssignments(m_InitialGlyphAssignments),
+            GlyphRanges = PlotLayer.CopyGlyphRanges(m_InitialGlyphRanges),
+        };
     }
 }

@@ -63,6 +63,17 @@ namespace DataViz.Study
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Stack-aware overload: datasetOf resolves a layer's dataset file name (may return null).
+        /// WP1 body: the legacy keys for the active layer only; WP7 adds "active" and "layers".
+        /// </summary>
+        public static string Write(PlotSnapshot s, System.Func<string, DatasetColumnar> datasetOf)
+        {
+            if (s == null)
+                return "{}";
+            return Write(s, datasetOf?.Invoke(s.DatasetName ?? ""));
+        }
+
         // -1 is JSON null; otherwise the name (or "#index" when it cannot be resolved).
         static void AppendColumn(StringBuilder sb, int index, DatasetColumnar dataset)
         {

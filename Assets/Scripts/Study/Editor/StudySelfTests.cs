@@ -33,6 +33,12 @@ namespace DataViz.Study
             Guard(t, "WamIa scan", () => TestWamIaScan(t));
             Guard(t, "WamIa result", () => TestWamIaResult(t));
 
+            // Every [SelfTest] method in this assembly (SelfTestKit), added to the same report.
+            var kit = new SelfTestTally();
+            Guard(t, "SelfTestKit", () => SelfTestKit.RunAll(kit));
+            t.Pass += kit.Pass;
+            t.Failures.AddRange(kit.Failures);
+
             var sb = new StringBuilder();
             sb.Append("PASS ").Append(t.Pass).Append(" / FAIL ").Append(t.Failures.Count);
             foreach (string f in t.Failures)

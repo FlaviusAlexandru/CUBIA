@@ -35,11 +35,6 @@ namespace DataViz
         [Range(0f, 1f)]
         public float m_TimeTrailFraction = 0.02f;
 
-        // A time column whose values are all whole numbers spanning at most this many steps animates
-        // step by step (the original behaviour); anything else uses the trailing window.
-        private const float k_MaxDiscreteTimeSteps = 1000f;
-        private const float k_WholeNumberEpsilon = 1e-3f;
-
         [Header("Axis Label Settings")]
         [Tooltip("Font size of the axis name + range labels (was 3).")]
         public float m_AxisLabelFontSize = 7f;
@@ -148,108 +143,25 @@ namespace DataViz
 
             Debug.Log($"[ScatterplotVisualizer] Plot Regeneration Called");
 
-            if (m_Manager == null || m_Manager.LoadedDataset == null)
-                return;
+            var frame = new PlotFrame();
 
-            DatasetColumnar dataset = m_Manager.LoadedDataset as DatasetColumnar;
-            if (dataset == null)
+            if (m_Manager == null || m_Manager.LoadedDataset == null)
             {
-                Debug.LogError("ScatterplotVisualizer requires DatasetColumnar. Current dataset is not columnar.");
+                PublishFrame(frame, null);
                 return;
             }
+
+            DatasetColumnar dataset = m_Manager.LoadedDataset;
             int xCol = m_Manager.XColumnIndex;
             int yCol = m_Manager.YColumnIndex;
             int zCol = m_Manager.ZColumnIndex;
             int colorCol = m_Manager.ColorColumnIndex;
-            int timeCol = m_Manager.TimeColumnIndex;
             float pointSize = m_Manager.PointSize;
 
-            // 1. Build Grid and Axes Visuals
+            // 1. Build Grid and Axes Visuals (from the active layer, as before layers; WP2 moves this to the shared bounds)
             BuildAxesAndGrid(dataset, xCol, yCol, zCol);
 
-            // 2. Setup GPU Instanced Point Arrays
-            List<Vector3> positions = new List<Vector3>(dataset.RowCount);
-            List<Color> colors = new List<Color>(dataset.RowCount);
-
-            // Tracks, for each entry in positions/colors, which original dataset row it came from.
-            // Every row is in the buffer today, but GPUPointInteractable relies on this mapping for
-            // tooltips, so keep it explicit.
-            List<int> visibleRowIndices = new List<int>(dataset.RowCount);
-            List<int> glyphIndices = new List<int>(dataset.RowCount);
-
-            // Column references
-            DatasetColumn xColumn = (xCol >= 0 && xCol < dataset.ColumnCount) ? dataset.Columns[xCol] : null;
-            DatasetColumn yColumn = (yCol >= 0 && yCol < dataset.ColumnCount) ? dataset.Columns[yCol] : null;
-            DatasetColumn zColumn = (zCol >= 0 && zCol < dataset.ColumnCount) ? dataset.Columns[zCol] : null;
-            DatasetColumn colorColumn = (colorCol >= 0 && colorCol < dataset.ColumnCount) ? dataset.Columns[colorCol] : null;
-            DatasetColumn timeColumn = (timeCol >= 0 && timeCol < dataset.ColumnCount) ? dataset.Columns[timeCol] : null;
-
-            // Time window: TimeScrub (0-1) maps across the column's min/max range. Rows outside the
-            // current window stay in the buffer at m_TimeOutsideAlpha (pilot finding P4) instead of
-            // being skipped. Discrete columns (whole numbers, few steps, e.g. moving_clusters.csv)
-            // snap to the nearest whole step as before; continuous ones (e.g. seconds at 125 Hz) show
-            // a trailing window [t - W, t], held at [min, min + W] until t gets there.
-            bool timeFilterActive = timeColumn != null && timeColumn.IsNumeric;
-            bool timeDiscrete = false;
-            int currentTimeStep = 0;
-            float timeWindowLo = 0f;
-            float timeWindowHi = 0f;
-
-            m_TimeWindowMask.Clear();
-            m_HoverPositions.Clear();
-            m_HoverColors.Clear();
-            m_HoverRowIndices.Clear();
-
-            if (timeFilterActive)
-            {
-                float tMin = timeColumn.MinValue;
-                float tMax = timeColumn.MaxValue;
-                float targetValue = Mathf.Lerp(tMin, tMax, m_Manager.TimeScrub);
-                timeDiscrete = IsDiscreteTimeColumn(dataset, timeCol, timeColumn);
-                if (timeDiscrete)
-                {
-                    currentTimeStep = Mathf.RoundToInt(targetValue);
-                }
-                else
-                {
-                    float trail = Mathf.Max(0f, m_TimeTrailFraction) * (tMax - tMin);
-                    timeWindowHi = Mathf.Max(targetValue, tMin + trail);
-                    timeWindowLo = timeWindowHi - trail;
-                }
-            }
-
-            // Value filtering (m_Manager.Filters): like the time window above, non-matching
-            // rows are NOT skipped - they stay in the buffer at a dimmed alpha so they visually
-            // fade away instead of disappearing. This keeps row counts/indices stable for
-            // GPUPointInteractable and avoids the plot "jumping" as points vanish.
-            // Each entry with no value picked (empty Label, "Any value" in the UI) matches a row
-            // that has a value in that column at all. Entries combine with OR (see RowPassesFilters).
-            List<ActiveFilter> activeFilters = BuildActiveFilters(dataset);
-            bool filterActive = activeFilters.Count > 0;
-
-            // Mapped size: per-point size from the size column's normalised value, scaled around
-            // the slider's PointSize. Fixed mode (default) passes no list - identical to before.
-            int sizeCol = m_Manager.SizeColumnIndex;
-            bool sizeMappedActive = m_Manager.SizeMapped && sizeCol >= 0 && sizeCol < dataset.ColumnCount
-                                    && dataset.Columns[sizeCol].IsNumeric;
-            List<float> pointSizes = sizeMappedActive ? new List<float>(dataset.RowCount) : null;
-
-            // Glyph column: independent of X/Y/Z (same as colorCol), so users can encode a
-            // dimension via shape even when it isn't one of the plotted axes. The actual
-            // shape per label is a manual mapping (m_Manager.GlyphAssignments), looked up
-            // per row below (GetRowGlyph): the value's own assignment, else the glyph range its
-            // value falls in, else glyph 0. Rows with no value in the column always get glyph 0.
-            int glyphCol = m_Manager.GlyphColumnIndex;
-            bool glyphActive = glyphCol >= 0 && glyphCol < dataset.ColumnCount;
-            DatasetColumn glyphColumn = glyphActive ? dataset.Columns[glyphCol] : null;
-            List<string> glyphCategoryTable = (glyphActive && glyphColumn.IsCategorical)
-                ? new List<string>(glyphColumn.UniqueValues)
-                : null;
-
-            // Glyph range editor preview: while its draft ranges overlap, points whose glyph
-            // value lies inside an overlap are hidden (alpha 0). Nothing is committed.
-            bool glyphPreviewHideActive = glyphActive && glyphColumn.IsNumeric && m_GlyphPreviewHiddenIntervals.Count > 0;
-
+            DatasetColumn colorColumn = dataset.GetColumn(colorCol);
             if (colorColumn != null)
             {
                 Debug.Log($"[Color Debug] Col Name: '{colorColumn.Name}' | Index: {colorCol} | Min: {colorColumn.MinValue} | Max: {colorColumn.MaxValue} | IsNumeric: {colorColumn.IsNumeric}");
@@ -259,256 +171,143 @@ namespace DataViz
                 Debug.LogWarning($"[Color Debug] colorColumn is NULL! colorCol index was: {colorCol}");
             }
 
-            Color[] categoricalPalette = new Color[]
+            // 2. One concatenated buffer for every visible point layer, in stack order. Each layer's
+            // per-row work is LayerPointBuilder.Append; positions come from the layer's axis frame
+            // (shared bounds, or its own range when Normalised). Rows outside the time window stay
+            // in the buffer at m_TimeOutsideAlpha (pilot finding P4); rows rejected by a value filter
+            // stay at m_FilteredOutAlpha, so row counts/indices stay stable for GPUPointInteractable.
+            LayerStack stack = m_Manager.Stack;
+            frame.StackVersion = stack.Version;
+            frame.Bounds = m_Manager.SharedBounds;
+            frame.Budget = m_Manager.PointBudget;
+            frame.ClockActive = m_Manager.GetClockRange(out frame.ClockMin, out frame.ClockMax);
+            frame.ClockTime = frame.ClockActive ? PlotClock.TimeAt(m_Manager.TimeScrub, frame.ClockMin, frame.ClockMax) : 0f;
+
+            var settings = new LayerBuildSettings
             {
-                Color.red, Color.blue, Color.green, Color.yellow, Color.cyan, Color.magenta,
-                new Color(1f, 0.5f, 0f), new Color(0.5f, 0f, 0.5f), new Color(0f, 0.5f, 0.5f),
-                new Color(0.7f, 0.2f, 0.2f), new Color(0.2f, 0.7f, 0.2f), new Color(0.2f, 0.2f, 0.7f)
+                Origin = m_PointsContainer.localPosition,
+                AxisLength = m_AxisLength,
+                FilteredOutAlpha = m_FilteredOutAlpha,
+                TimeOutsideAlpha = m_TimeOutsideAlpha,
+                TimeTrailFraction = m_TimeTrailFraction,
+                GlyphPreviewHidden = m_GlyphPreviewHiddenIntervals,
+                GlyphPreviewLayerId = m_Manager.EditLayer.Id,
             };
 
-            Vector3 basePosition = m_PointsContainer.localPosition;
-
-            for (int i = 0; i < dataset.RowCount; i++)
+            var buffers = new PointBuffers();
+            bool anyTimeActive = false;
+            bool anySizeMapped = false;
+            foreach (PlotLayer layer in stack.Layers)
             {
-                // 0. Time window: is this row part of what is animating now? (A row with no time
-                // value never is.)
-                bool inTimeWindow = true;
-                if (timeFilterActive)
+                var layerFrame = new LayerFrame
                 {
-                    if (!dataset.HasValue(i, timeCol))
-                    {
-                        inTimeWindow = false;
-                    }
-                    else
-                    {
-                        float rawTimeValue = dataset.GetNumericValue(i, timeCol);
-                        inTimeWindow = timeDiscrete
-                            ? Mathf.RoundToInt(rawTimeValue) == currentTimeStep
-                            : rawTimeValue >= timeWindowLo && rawTimeValue <= timeWindowHi;
-                    }
-                }
+                    Layer = layer,
+                    Dataset = layer.Kind == LayerKind.Computed ? (stack.Find(layer.SourceLayerId) ?? layer).Dataset : layer.Dataset,
+                    Axes = LayerBounds.FrameInStack(layer, stack, frame.Bounds),
+                };
+                frame.Layers.Add(layerFrame);
 
-                // 1. Calculate spatial positions using columnar data
-                float xNorm = xColumn != null ? dataset.GetNormalizedValue(i, xCol) : 0f;
-                float yNorm = yColumn != null ? dataset.GetNormalizedValue(i, yCol) : 0f;
-                float zNorm = zColumn != null ? dataset.GetNormalizedValue(i, zCol) : 0f;
+                if (!layer.Visible || !layer.IsPointLayer || layer.LocalUnavailable || layer.Dataset == null)
+                    continue;
 
-                Vector3 worldPos = basePosition + (new Vector3(xNorm, yNorm, zNorm) * m_AxisLength);
-                positions.Add(worldPos);
+                layerFrame.BufferStart = buffers.Count;
+                layerFrame.Info = LayerPointBuilder.Append(layer, stack, layerFrame.Axes, frame.Budget - buffers.Count,
+                    frame.ClockActive, frame.ClockMin, frame.ClockMax, frame.ClockTime, settings, buffers);
+                layerFrame.BufferCount = buffers.Count - layerFrame.BufferStart;
 
-                // 2. Calculate point color directly using columnar data
-                Color pointColor = Color.cyan;
-
-                if (colorColumn != null && colorCol >= 0 && colorCol < dataset.ColumnCount)
-                {
-                    if (colorColumn.IsNumeric)
-                    {
-                        // Safely compute normalized gradient directly using global column bounds
-                        float rawVal = dataset.GetNumericValue(i, colorCol);
-                        float range = colorColumn.MaxValue - colorColumn.MinValue;
-                        float norm = 0.5f;
-
-                        if (range > 0.00001f)
-                        {
-                            norm = (rawVal - colorColumn.MinValue) / range;
-                        }
-
-                        norm = Mathf.Clamp01(norm);
-                        pointColor = Color.Lerp(Color.blue, Color.red, norm);
-                    }
-                    else if (colorColumn.IsCategorical)
-                    {
-                        int catIdx = dataset.GetCategoryIndex(i, colorCol);
-                        pointColor = categoricalPalette[catIdx % categoricalPalette.Length];
-                    }
-                }
-
-                // 3. Dim (rather than exclude) rows that pass none of the active filters.
-                if (filterActive)
-                {
-                    bool matches = RowPassesFilters(dataset, i, activeFilters);
-                    pointColor.a = matches ? 1f : m_FilteredOutAlpha;
-                }
-
-                // 3. (time) Fade rather than hide rows outside the time window; the lower alpha wins.
-                if (!inTimeWindow)
-                {
-                    pointColor.a = Mathf.Min(pointColor.a, m_TimeOutsideAlpha);
-                }
-
-                // 3a. Glyph range preview: hide points inside an overlap of the draft ranges.
-                if (glyphPreviewHideActive && dataset.HasValue(i, glyphCol)
-                    && IsInGlyphPreviewHiddenInterval(dataset.GetNumericValue(i, glyphCol)))
-                {
-                    pointColor.a = 0f;
-                }
-
-                // 3b. Mapped size: lerp between min/max scale of the slider size by normalised value.
-                if (sizeMappedActive)
-                {
-                    pointSizes.Add(GetMappedPointSize(dataset, i, sizeCol, pointSize));
-                }
-
-                // 4. Look up this row's manually-assigned glyph on the active glyph column.
-                int glyphIndex = 0;
-                if (glyphActive)
-                {
-                    glyphIndex = GetRowGlyph(dataset, i, glyphCol, glyphColumn, glyphCategoryTable);
-                }
-                glyphIndices.Add(glyphIndex);
-
-                colors.Add(pointColor);
-                visibleRowIndices.Add(i);
-
-                if (timeFilterActive)
-                {
-                    m_TimeWindowMask.Add(inTimeWindow);
-                    if (inTimeWindow)
-                    {
-                        m_HoverPositions.Add(worldPos);
-                        m_HoverColors.Add(pointColor);
-                        m_HoverRowIndices.Add(i);
-                    }
-                }
+                DatasetColumn layerTime = layer.Dataset.GetColumn(layer.TimeColumnIndex);
+                anyTimeActive |= frame.ClockActive && layerTime != null && layerTime.IsNumeric;
+                anySizeMapped |= layer.SizeMapped && layer.Dataset.GetColumn(layer.SizeColumnIndex) is DatasetColumn sizeColumn && sizeColumn.IsNumeric;
             }
+            frame.TotalPoints = buffers.Count;
 
             m_GPUPoints.BuildAdvanced(
-                positions,
-                colors,
+                buffers.Positions,
+                buffers.Colors,
                 pointSize,
                 null, // glossiness - not yet exposed as a mapped dimension
                 null, // metallic - not yet exposed as a mapped dimension
-                glyphIndices,
-                pointSizes // null in Fixed size mode -> every point uses pointSize
+                buffers.Glyphs,
+                buffers.Sizes // per point; equals pointSize everywhere in Fixed size mode
             );
 
-            LastBuiltPointSizes = pointSizes;
-            LastBuiltGlyphIndices = glyphIndices;
-            LastBuiltRowIndices = visibleRowIndices;
-            LastBuiltColors = colors;
-            LastBuiltInTimeWindow = timeFilterActive ? m_TimeWindowMask : null;
+            LastBuiltPositions = buffers.Positions;
+            LastBuiltPointSizes = anySizeMapped ? buffers.Sizes : null;
+            LastBuiltGlyphIndices = buffers.Glyphs;
+            LastBuiltRowIndices = buffers.Rows;
+            LastBuiltColors = buffers.Colors;
+            LastBuiltInTimeWindow = anyTimeActive ? buffers.InTimeWindow : null;
 
             // Also update the interactable with point data. While a time column is set it only gets
             // the rows inside the time window, so the faded context rows can't be hovered/tooltipped
             // (as before, when they were not drawn at all).
             if (m_GPUInteractable != null)
             {
-                if (timeFilterActive)
-                    m_GPUInteractable.SetPointData(m_HoverPositions, m_HoverColors, pointSize, m_HoverRowIndices);
-                else
-                    m_GPUInteractable.SetPointData(positions, colors, pointSize, visibleRowIndices);
-            }
-
-            //TEMPORARILY COMMENTED OUT WHILE I TRY OUT GPU INSTANCING
-            /*
-            for (int i = 0; i < dataset.RowCount; i++)
-            {
-                DatasetRow row = dataset.Rows[i];
-
-                float xNorm = row.GetNormalizedValue(xCol);
-                float yNorm = row.GetNormalizedValue(yCol);
-                float zNorm = row.GetNormalizedValue(zCol);
-
-                Vector3 localPosition = new Vector3(xNorm, yNorm, zNorm) * m_AxisLength;
-
-                // Create point sphere
-                GameObject pointObj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                pointObj.name = $"Point_{i}";
-                pointObj.transform.SetParent(m_PointsContainer, false);
-                pointObj.transform.localPosition = localPosition;
-                pointObj.transform.localScale = Vector3.one * pointSize;
-
-                // Disable default sphere collider collision (avoid pushing player) and set as trigger
-                SphereCollider col = pointObj.GetComponent<SphereCollider>();
-                if (col != null)
+                if (anyTimeActive)
                 {
-                    col.isTrigger = true;
-                }
-
-                // Apply material and color
-                Renderer renderer = pointObj.GetComponent<Renderer>();
-                if (renderer != null)
-                {
-                    Material matInstance = Instantiate(m_PointMaterial);
-                    
-                    Color pointColor = Color.cyan; // Default color
-                    if (colorCol >= 0 && colorCol < dataset.ColumnCount)
+                    m_HoverPositions.Clear();
+                    m_HoverColors.Clear();
+                    m_HoverRowIndices.Clear();
+                    for (int i = 0; i < buffers.Count; i++)
                     {
-                        var colMeta = dataset.Columns[colorCol];
-                        if (colMeta.IsNumeric)
-                        {
-                            // Numeric Gradient: Blue to Red
-                            float colorNorm = row.GetNormalizedValue(colorCol);
-                            pointColor = Color.Lerp(Color.blue, Color.red, colorNorm);
-                        }
-                        else if (colMeta.IsCategorical)
-                        {
-                            // Categorical Palette mapping
-                            string rawVal = row.GetRawValue(colorCol);
-                            int catIdx = uniqueColorCategories.IndexOf(rawVal);
-                            if (catIdx >= 0)
-                            {
-                                pointColor = palette[catIdx % palette.Length];
-                            }
-                        }
+                        if (!buffers.InTimeWindow[i])
+                            continue;
+                        m_HoverPositions.Add(buffers.Positions[i]);
+                        m_HoverColors.Add(buffers.Colors[i]);
+                        m_HoverRowIndices.Add(buffers.Rows[i]);
                     }
-                    matInstance.color = pointColor;
-                    renderer.sharedMaterial = matInstance;
+                    m_GPUInteractable.SetPointData(m_HoverPositions, m_HoverColors, pointSize, m_HoverRowIndices);
                 }
-
-                // Add Hover/Tooltip mechanics
-                DataPointInteractable dpi = pointObj.AddComponent<DataPointInteractable>();
-                
-                // Add TMPro Tooltip inside each point
-                GameObject tooltipObj = new GameObject("TooltipCanvas");
-                tooltipObj.transform.SetParent(pointObj.transform, false);
-                tooltipObj.transform.localPosition = new Vector3(0, 1.5f, 0); // Position slightly above the point
-                tooltipObj.transform.localScale = Vector3.one * (0.2f / pointSize); // Keep tooltip readable regardless of point size
-
-                Canvas canvas = tooltipObj.AddComponent<Canvas>();
-                canvas.renderMode = RenderMode.WorldSpace;
-                
-                RectTransform rect = tooltipObj.GetComponent<RectTransform>();
-                rect.sizeDelta = new Vector2(300, 180);
-
-                // Add background panel
-                GameObject bgObj = new GameObject("Background");
-                bgObj.transform.SetParent(tooltipObj.transform, false);
-                UnityEngine.UI.Image bgImg = bgObj.AddComponent<UnityEngine.UI.Image>();
-                bgImg.color = new Color(0, 0, 0, 0.85f);
-                RectTransform bgRect = bgObj.GetComponent<RectTransform>();
-                bgRect.anchorMin = Vector2.zero;
-                bgRect.anchorMax = Vector2.one;
-                bgRect.sizeDelta = Vector2.zero;
-
-                // Add TextMeshPro
-                GameObject textObj = new GameObject("Text");
-                textObj.transform.SetParent(tooltipObj.transform, false);
-                TextMeshProUGUI tmpText = textObj.AddComponent<TextMeshProUGUI>();
-                tmpText.fontSize = 18;
-                tmpText.alignment = TextAlignmentOptions.Left;
-                tmpText.enableWordWrapping = true;
-                tmpText.color = Color.white;
-                
-                RectTransform textRect = textObj.GetComponent<RectTransform>();
-                textRect.anchorMin = Vector2.zero;
-                textRect.anchorMax = Vector2.one;
-                textRect.sizeDelta = new Vector2(-20, -20); // Margin
-                textRect.anchoredPosition = Vector2.zero;
-
-                // Setup tooltip reference
-                dpi.m_TooltipObject = tooltipObj;
-                dpi.m_TooltipText = tmpText;
-                dpi.SetupTooltip(row, dataset, xCol, yCol, zCol, colorCol);
-
-                // Hide tooltip initially
-                tooltipObj.SetActive(false);
-
-                m_ActivePoints.Add(pointObj);
+                else
+                {
+                    m_GPUInteractable.SetPointData(buffers.Positions, buffers.Colors, pointSize, buffers.Rows);
+                }
             }
-            */
 
+            PublishFrame(frame, buffers);
         }
+
+        private void PublishFrame(PlotFrame frame, PointBuffers buffers)
+        {
+            if (buffers == null)
+            {
+                LastBuiltPositions = null;
+                LastBuiltPointSizes = null;
+                LastBuiltGlyphIndices = null;
+                LastBuiltRowIndices = null;
+                LastBuiltColors = null;
+                LastBuiltInTimeWindow = null;
+            }
+
+            LastFrame = frame;
+            try
+            {
+                OnFrameBuilt?.Invoke(frame);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogException(e); // a broken overlay must not stop the plot
+            }
+        }
+
+        /// <summary>
+        /// What the last RegeneratePlot built: bounds, clock, and per layer its axis frame, buffer
+        /// slice and draw info. Never null after Start (an empty frame when nothing is loaded).
+        /// </summary>
+        public PlotFrame LastFrame { get; private set; } = new PlotFrame();
+
+        /// <summary>Raised at the end of every RegeneratePlot with LastFrame. Overlays (lines, labels, legend) subscribe here.</summary>
+        public event System.Action<PlotFrame> OnFrameBuilt;
+
+        /// <summary>Unit-cube coordinates (0..1 per axis) → this visualizer's local space, where the points live.</summary>
+        public Vector3 CubeToLocal(Vector3 unit)
+        {
+            Vector3 origin = m_PointsContainer != null
+                ? m_PointsContainer.localPosition
+                : new Vector3(-m_AxisLength / 2f, -m_AxisLength / 2f, -m_AxisLength / 2f);
+            return origin + unit * m_AxisLength;
+        }
+
 
         private void BuildAxesAndGrid(DatasetColumnar dataset, int xCol, int yCol, int zCol)
         {
@@ -931,58 +730,36 @@ namespace DataViz
         /// formatting). Shared by filter matching, glyph lookup, and GPUPointInteractable's
         /// tooltip so all three always agree on what a row's "label" is for a given column.
         /// Returns null when the cell has no value (see DatasetColumnar.HasValue), so a
-        /// missing cell never matches a picked value or a per-value glyph.
+        /// missing cell never matches a picked value or a per-value glyph. (LayerRows.RowLabel.)
         /// </summary>
         public string GetRowLabel(
             DatasetColumnar dataset,
             int rowIndex,
             int columnIndex,
             DatasetColumn column,
-            List<string> categoryTable)
-        {
-            if (!dataset.HasValue(rowIndex, columnIndex))
-                return null;
-
-            if (column.IsCategorical)
-            {
-                int catIdx = dataset.GetCategoryIndex(rowIndex, columnIndex);
-                if (catIdx < 0 || categoryTable == null || catIdx >= categoryTable.Count)
-                    return null;
-
-                return categoryTable[catIdx];
-            }
-
-            if (column.IsNumeric)
-            {
-                return dataset.GetNumericValue(rowIndex, columnIndex).ToString();
-            }
-
-            return null;
-        }
+            List<string> categoryTable) =>
+            LayerRows.RowLabel(dataset, rowIndex, columnIndex, column, categoryTable);
 
         /// <summary>
-        /// Checks whether dataset row i passes the active filter. With no value picked
-        /// (empty filterLabel / "Any value") a row passes when it has a value in the filter
-        /// column; with a value picked it must have exactly that value.
-        /// </summary>
-        /// <summary>
-        /// Per-point sizes passed to the renderer by the last RegeneratePlot, or null when the
-        /// size mode was Fixed. Exposed for inspection/tests only.
+        /// Per-point sizes passed to the renderer by the last RegeneratePlot, or null when no drawn
+        /// layer was in Mapped size mode. Exposed for inspection/tests only.
         /// </summary>
         public List<float> LastBuiltPointSizes { get; private set; }
 
         /// <summary>
-        /// Glyph index, dataset row and colour of each point passed to the renderer by the last
-        /// RegeneratePlot, in buffer order. Exposed for inspection/tests only.
+        /// Position, glyph index, dataset row and colour of each point passed to the renderer by the
+        /// last RegeneratePlot, in buffer order (all layers concatenated; LastFrame.FrameOfPoint
+        /// tells which layer a buffer index belongs to). Exposed for inspection, tests and overlays.
         /// </summary>
+        public IReadOnlyList<Vector3> LastBuiltPositions { get; private set; }
         public List<int> LastBuiltGlyphIndices { get; private set; }
         public List<int> LastBuiltRowIndices { get; private set; }
         public List<Color> LastBuiltColors { get; private set; }
 
         /// <summary>
         /// Parallel to LastBuiltRowIndices: true when that point is inside the current time window
-        /// (drawn at full alpha, hoverable), false when it is faded context. Null when no time
-        /// column is set (every point counts as inside). Reused, so valid until the next RegeneratePlot.
+        /// (drawn at full alpha, hoverable), false when it is faded context. Null when no drawn layer
+        /// has an active time column (every point counts as inside). Valid until the next RegeneratePlot.
         /// </summary>
         public List<bool> LastBuiltInTimeWindow { get; private set; }
 
@@ -995,54 +772,15 @@ namespace DataViz
             return bufferIndex >= 0 && bufferIndex < mask.Count && mask[bufferIndex];
         }
 
-        // Reused every regenerate (it runs every frame during playback): time-window mask and the
-        // in-window subset handed to GPUPointInteractable.
-        private readonly List<bool> m_TimeWindowMask = new();
+        // Reused every regenerate (it runs every frame during playback): the in-window subset handed
+        // to GPUPointInteractable.
         private readonly List<Vector3> m_HoverPositions = new();
         private readonly List<Color> m_HoverColors = new();
         private readonly List<int> m_HoverRowIndices = new();
 
-        // Discrete/continuous verdict for the time column, cached per dataset instance + column.
-        private DatasetColumnar m_TimeKindDataset;
-        private int m_TimeKindColumn = -1;
-        private bool m_TimeKindDiscrete;
-
         /// <summary>
-        /// True when the time column animates step by step: every value is a whole number and the
-        /// range spans at most k_MaxDiscreteTimeSteps steps. Scans the column once per dataset/column.
-        /// </summary>
-        private bool IsDiscreteTimeColumn(DatasetColumnar dataset, int timeCol, DatasetColumn timeColumn)
-        {
-            if (ReferenceEquals(dataset, m_TimeKindDataset) && timeCol == m_TimeKindColumn)
-                return m_TimeKindDiscrete;
-
-            m_TimeKindDataset = dataset;
-            m_TimeKindColumn = timeCol;
-            m_TimeKindDiscrete = ScanIsDiscrete(dataset, timeCol, timeColumn);
-            return m_TimeKindDiscrete;
-        }
-
-        private static bool ScanIsDiscrete(DatasetColumnar dataset, int timeCol, DatasetColumn timeColumn)
-        {
-            float range = timeColumn.MaxValue - timeColumn.MinValue;
-            if (!(range >= 0f) || range > k_MaxDiscreteTimeSteps) // also rejects NaN
-                return false;
-
-            for (int i = 0; i < dataset.RowCount; i++)
-            {
-                if (!dataset.HasValue(i, timeCol))
-                    continue;
-                float v = dataset.GetNumericValue(i, timeCol);
-                if (Mathf.Abs(v - Mathf.Round(v)) > k_WholeNumberEpsilon)
-                    return false;
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Glyph for dataset row rowIndex on the glyph column: per-value assignment, else the
-        /// glyph range its numeric value falls in, else glyph 0 (see
+        /// Glyph for dataset row rowIndex on the edit layer's glyph column: per-value assignment,
+        /// else the glyph range its numeric value falls in, else glyph 0 (see
         /// MultiplayerScatterplotManager.GetGlyphForRow). Shared with GPUPointInteractable's tooltip.
         /// </summary>
         public int GetRowGlyph(
@@ -1059,6 +797,16 @@ namespace DataViz
                 : float.NaN;
             return m_Manager.GetGlyphForRow(label, hasValue, numericValue, 0);
         }
+
+        /// <summary>GetRowGlyph for a given layer (its glyph assignments and ranges, fallback glyph 0).</summary>
+        public int GetRowGlyph(
+            PlotLayer layer,
+            DatasetColumnar dataset,
+            int rowIndex,
+            int glyphCol,
+            DatasetColumn glyphColumn,
+            List<string> categoryTable) =>
+            LayerPointBuilder.RowGlyph(layer, dataset, rowIndex, glyphCol, glyphColumn, categoryTable, 0);
 
         // Glyph-column value intervals (x = low, y = high, both inclusive) hidden by the glyph
         // range editor's overlap preview. Empty = no preview.
@@ -1088,132 +836,59 @@ namespace DataViz
                 RegeneratePlot();
         }
 
-        private bool IsInGlyphPreviewHiddenInterval(float value)
-        {
-            foreach (Vector2 interval in m_GlyphPreviewHiddenIntervals)
-            {
-                if (value >= interval.x && value <= interval.y)
-                    return true;
-            }
-            return false;
-        }
-
         /// <summary>One resolved filter entry, snapshotted once per regenerate.</summary>
-        public class ActiveFilter
+        public class ActiveFilter : LayerRows.ResolvedFilter
         {
-            public int ColumnIndex;
-            public DatasetColumn Column;
-            public List<string> CategoryTable;
-            public string Label;
-            // Value ranges (x = min, y = max, inclusive); when any, they replace Label.
-            public List<Vector2> Ranges;
         }
 
-        /// <summary>Resolves m_Manager.Filters against the dataset, skipping out-of-range columns.</summary>
+        /// <summary>Resolves the edit layer's filters (m_Manager.Filters) against the dataset, skipping out-of-range columns.</summary>
         public List<ActiveFilter> BuildActiveFilters(DatasetColumnar dataset)
         {
-            List<ActiveFilter> result = new List<ActiveFilter>();
             if (m_Manager == null || dataset == null || m_Manager.Filters == null)
-                return result;
+                return new List<ActiveFilter>();
 
-            foreach (MultiplayerScatterplotManager.FilterEntry entry in m_Manager.Filters)
-            {
-                if (entry == null || entry.ColumnIndex < 0 || entry.ColumnIndex >= dataset.ColumnCount)
-                    continue;
-
-                DatasetColumn column = dataset.Columns[entry.ColumnIndex];
-                if (!column.IsCategorical && !column.IsNumeric)
-                {
-                    Debug.LogWarning($"[ScatterplotVisualizer] Filter column '{column.Name}' is neither " +
-                                      $"categorical nor numeric - it matches every row.");
-                }
-
-                result.Add(new ActiveFilter
-                {
-                    ColumnIndex = entry.ColumnIndex,
-                    Column = column,
-                    // Snapshot the categorical lookup table once per regenerate rather than per-row.
-                    CategoryTable = column.IsCategorical ? new List<string>(column.UniqueValues) : null,
-                    Label = entry.Label ?? "",
-                    Ranges = entry.Ranges.ConvertAll(r => new Vector2(r.min, r.max))
-                });
-            }
-
-            return result;
+            return LayerRows.ResolveFilters<ActiveFilter>(m_Manager.Filters, dataset, warnUntyped: true);
         }
+
+        /// <summary>Resolves a given layer's filters against dataset (null = the layer's own).</summary>
+        public List<ActiveFilter> BuildActiveFilters(PlotLayer layer, DatasetColumnar dataset) =>
+            LayerRows.ResolveFilters<ActiveFilter>(layer?.Filters, dataset ?? layer?.Dataset, warnUntyped: true);
 
         /// <summary>
         /// OR over all filters: true when the row passes at least one of them, or when there are
         /// no filters at all.
         /// </summary>
-        public bool RowPassesFilters(DatasetColumnar dataset, int rowIndex, List<ActiveFilter> filters)
-        {
-            if (filters == null || filters.Count == 0)
-                return true;
-
-            foreach (ActiveFilter filter in filters)
-            {
-                if (RowMatchesFilter(dataset, rowIndex, filter))
-                    return true;
-            }
-
-            return false;
-        }
+        public bool RowPassesFilters(DatasetColumnar dataset, int rowIndex, List<ActiveFilter> filters) =>
+            LayerRows.PassesFilters(dataset, rowIndex, filters);
 
         /// <summary>
         /// Mapped size for one row: baseSize x lerp(SizeMappedMinScale, SizeMappedMaxScale, normalised
         /// value), so the column's largest value draws biggest. Rows with no value keep baseSize.
         /// </summary>
-        public float GetMappedPointSize(DatasetColumnar dataset, int rowIndex, int sizeCol, float baseSize)
-        {
-            if (!dataset.HasValue(rowIndex, sizeCol))
-                return baseSize;
-
-            float norm = dataset.GetNormalizedValue(rowIndex, sizeCol);
-            return baseSize * Mathf.Lerp(MultiplayerScatterplotManager.SizeMappedMinScale,
-                                         MultiplayerScatterplotManager.SizeMappedMaxScale, norm);
-        }
+        public float GetMappedPointSize(DatasetColumnar dataset, int rowIndex, int sizeCol, float baseSize) =>
+            LayerPointBuilder.MappedPointSize(dataset, rowIndex, sizeCol, baseSize);
 
         /// <summary>
         /// One filter entry: with ranges, the row's value must lie in at least one of them (a row
         /// with no value never does); otherwise the label rule below.
         /// </summary>
-        public bool RowMatchesFilter(DatasetColumnar dataset, int rowIndex, ActiveFilter filter)
-        {
-            if (filter.Ranges != null && filter.Ranges.Count > 0 && filter.Column.IsNumeric)
-            {
-                if (!dataset.HasValue(rowIndex, filter.ColumnIndex))
-                    return false;
-                float value = dataset.GetNumericValue(rowIndex, filter.ColumnIndex);
-                foreach (Vector2 range in filter.Ranges)
-                {
-                    if (value >= range.x && value <= range.y)
-                        return true;
-                }
-                return false;
-            }
+        public bool RowMatchesFilter(DatasetColumnar dataset, int rowIndex, ActiveFilter filter) =>
+            LayerRows.MatchesFilter(dataset, rowIndex, filter);
 
-            return RowMatchesFilter(dataset, rowIndex, filter.ColumnIndex, filter.Column, filter.CategoryTable, filter.Label);
-        }
-
+        /// <summary>
+        /// Checks whether dataset row i passes a filter. With no value picked (empty filterLabel /
+        /// "Any value") a row passes when it has a value in the filter column; with a value picked
+        /// it must have exactly that value.
+        /// </summary>
         public bool RowMatchesFilter(
             DatasetColumnar dataset,
             int rowIndex,
             int filterCol,
             DatasetColumn filterColumn,
             List<string> filterCategoryTable,
-            string filterLabel)
-        {
-            // Unknown column type - treat as non-filterable, don't dim.
-            if (!filterColumn.IsCategorical && !filterColumn.IsNumeric)
-                return true;
+            string filterLabel) =>
+            LayerRows.MatchesFilter(dataset, rowIndex, filterCol, filterColumn, filterCategoryTable, filterLabel);
 
-            if (string.IsNullOrEmpty(filterLabel))
-                return dataset.HasValue(rowIndex, filterCol);
-
-            string rowLabel = GetRowLabel(dataset, rowIndex, filterCol, filterColumn, filterCategoryTable);
-            return rowLabel != null && rowLabel == filterLabel;
-        }
 
         private void ClearPoints()
         {

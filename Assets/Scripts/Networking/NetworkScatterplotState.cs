@@ -151,7 +151,15 @@ namespace DataViz.Networking
                 m_DatasetHash = DatasetHash.Of(next.DatasetName);
                 SharedPlotAuthority.SetDatasetStatus(DatasetMatch.Match, next.DatasetName);
             }
-            next.DatasetHash = m_DatasetHash;
+
+            // Every dataset and subset layer carries its file's hash (DatasetHash.Of caches per file).
+            foreach (LayerSnapshot layer in next.Layers)
+            {
+                if (layer.Kind == (byte)LayerKind.Computed || string.IsNullOrEmpty(layer.DatasetName))
+                    continue;
+                layer.DatasetHash = layer.DatasetName == m_HashedDatasetName ? m_DatasetHash : DatasetHash.Of(layer.DatasetName);
+            }
+            next.Published = true;
 
             double now = NetworkManager.ServerTime.Time;
             next.ScrubServerTime = now;
@@ -191,35 +199,84 @@ namespace DataViz.Networking
         }
 
         // Runs the same manager call the client made; on the host it applies normally and OnManagerChanged publishes it.
+        // Layer-scoped legacy ops run inside EditLayerScope(r.Layer), so they land on the layer the client
+        // was editing even if the host switched layers since; a request for a layer that no longer exists
+        // is dropped. Plot-level ops ignore r.Layer; layer ops take it as their explicit id.
         void Apply(PlotRequest r)
         {
             MultiplayerScatterplotManager m = m_Manager;
+            if (ApplyPlotOrLayerOp(m, r))
+                return;
+
+            if (!string.IsNullOrEmpty(r.Layer) && m.Stack.Find(r.Layer) == null)
+            {
+                Debug.Log($"[NetworkScatterplotState] Dropped {r.Op}: layer '{r.Layer}' no longer exists.");
+                return;
+            }
+
+            using (m.EditLayerScope(r.Layer))
+            {
+                switch (r.Op)
+                {
+                    case PlotOp.XColumn: m.RequestXColumnRpc(r.Int); break;
+                    case PlotOp.YColumn: m.RequestYColumnRpc(r.Int); break;
+                    case PlotOp.ZColumn: m.RequestZColumnRpc(r.Int); break;
+                    case PlotOp.ColourColumn: m.RequestColorColumnRpc(r.Int); break;
+                    case PlotOp.PointSize: m.RequestPointSizeRpc(r.Float); break;
+                    case PlotOp.TimeColumn: m.RequestTimeColumnRpc(r.Int); break;
+                    case PlotOp.FilterColumn: m.RequestFilterIndexRpc(r.Int); break;
+                    case PlotOp.FilterLabel: m.RequestFilterLabelRpc(r.Text); break;
+                    case PlotOp.AddFilter: m.RequestAddFilterColumnRpc(r.Int, r.Text); break;
+                    case PlotOp.RemoveFilter: m.RequestRemoveFilterRpc(r.Int); break;
+                    case PlotOp.ClearFilters: m.RequestClearFiltersRpc(); break;
+                    case PlotOp.SizeColumn: m.RequestSizeColumnRpc(r.Int); break;
+                    case PlotOp.SizeMapped: m.RequestSizeMappedRpc(r.Bool); break;
+                    case PlotOp.GlyphColumn: m.RequestGlyphColumnRpc(r.Int); break;
+                    case PlotOp.GlyphAssignment: m.RequestGlyphAssignmentRpc(r.Text, r.Int); break;
+                    case PlotOp.GlyphRanges: m.RequestSetGlyphRangesRpc(r.GlyphRanges); break;
+                    case PlotOp.FilterRanges: m.RequestSetFilterRangesRpc(r.FilterRanges); break;
+                }
+            }
+        }
+
+        // Plot-level ops (no layer scope; Shuffle's r.Layer lists layer ids, read by the manager) and
+        // the layer ops (r.Layer is the explicit id). False for the layer-scoped legacy ops.
+        static bool ApplyPlotOrLayerOp(MultiplayerScatterplotManager m, PlotRequest r)
+        {
             switch (r.Op)
             {
-                case PlotOp.LoadDataset: m.RequestLoadDatasetRpc(r.Text); break;
-                case PlotOp.XColumn: m.RequestXColumnRpc(r.Int); break;
-                case PlotOp.YColumn: m.RequestYColumnRpc(r.Int); break;
-                case PlotOp.ZColumn: m.RequestZColumnRpc(r.Int); break;
-                case PlotOp.ColourColumn: m.RequestColorColumnRpc(r.Int); break;
-                case PlotOp.PointSize: m.RequestPointSizeRpc(r.Float); break;
-                case PlotOp.TimeColumn: m.RequestTimeColumnRpc(r.Int); break;
-                case PlotOp.TimeScrub: m.RequestTimeScrubRpc(r.Float); break;
-                case PlotOp.Playback: m.RequestPlaybackToggleRpc(r.Bool); break;
-                case PlotOp.FilterColumn: m.RequestFilterIndexRpc(r.Int); break;
-                case PlotOp.FilterLabel: m.RequestFilterLabelRpc(r.Text); break;
-                case PlotOp.AddFilter: m.RequestAddFilterColumnRpc(r.Int, r.Text); break;
-                case PlotOp.RemoveFilter: m.RequestRemoveFilterRpc(r.Int); break;
-                case PlotOp.ClearFilters: m.RequestClearFiltersRpc(); break;
-                case PlotOp.SizeColumn: m.RequestSizeColumnRpc(r.Int); break;
-                case PlotOp.SizeMapped: m.RequestSizeMappedRpc(r.Bool); break;
-                case PlotOp.GlyphColumn: m.RequestGlyphColumnRpc(r.Int); break;
-                case PlotOp.GlyphAssignment: m.RequestGlyphAssignmentRpc(r.Text, r.Int); break;
-                case PlotOp.GlyphRanges: m.RequestSetGlyphRangesRpc(r.GlyphRanges); break;
-                case PlotOp.Shuffle: m.RequestShuffleColumnsForClient(r.Int, r.Blacklist); break;
-                case PlotOp.ShuffleBackward: m.RequestShuffleBackwardRpc(); break;
-                case PlotOp.ShuffleForward: m.RequestShuffleForwardRpc(); break;
-                case PlotOp.FilterRanges: m.RequestSetFilterRangesRpc(r.FilterRanges); break;
-                case PlotOp.PlaybackRate: m.RequestPlaybackRateRpc(r.Float); break;
+                case PlotOp.LoadDataset: m.RequestLoadDatasetRpc(r.Text); return true;
+                case PlotOp.TimeScrub: m.RequestTimeScrubRpc(r.Float); return true;
+                case PlotOp.Playback: m.RequestPlaybackToggleRpc(r.Bool); return true;
+                case PlotOp.PlaybackRate: m.RequestPlaybackRateRpc(r.Float); return true;
+                case PlotOp.Shuffle: m.RequestShuffleColumnsForClient(r.Int, r.Blacklist); return true;
+                case PlotOp.ShuffleBackward: m.RequestShuffleBackwardRpc(); return true;
+                case PlotOp.ShuffleForward: m.RequestShuffleForwardRpc(); return true;
+
+                case PlotOp.AddDatasetLayer: m.RequestAddDatasetLayerRpc(r.Text); return true;
+                case PlotOp.AddSubsetLayer: m.RequestAddSubsetLayerRpc(r.Layer, r.Int, r.Text); return true;
+                case PlotOp.AddComputedLayer: m.RequestAddComputedLayerRpc(r.Layer, (ComputedLayerKind)r.Int); return true;
+                case PlotOp.RemoveLayer: m.RequestRemoveLayerRpc(r.Layer); return true;
+                case PlotOp.DuplicateLayer: m.RequestDuplicateLayerRpc(r.Layer); return true;
+                case PlotOp.SetActiveLayer: m.RequestSetActiveLayerRpc(r.Layer); return true;
+                case PlotOp.RenameLayer: m.RequestRenameLayerRpc(r.Layer, r.Text); return true;
+                case PlotOp.ReorderLayer: m.RequestReorderLayerRpc(r.Layer, r.Int); return true;
+                case PlotOp.SetLayerVisible: m.RequestSetLayerVisibleRpc(r.Layer, r.Bool); return true;
+                case PlotOp.SetLayerNormalised: m.RequestSetLayerNormalisedRpc(r.Layer, r.Bool); return true;
+                case PlotOp.SetSubsetHiddenInSource: m.RequestSetSubsetHiddenInSourceRpc(r.Layer, r.Bool); return true;
+                case PlotOp.SetComputedFlag: m.RequestSetComputedFlagRpc(r.Layer, r.Bool); return true;
+                case PlotOp.SetLayerOpacity: m.RequestSetLayerOpacityRpc(r.Layer, r.Float); return true;
+                case PlotOp.SetComputedValue: m.RequestSetComputedValueRpc(r.Layer, r.Float); return true;
+                case PlotOp.SetComputedSpan: m.RequestSetComputedSpanRpc(r.Layer, r.Float); return true;
+                case PlotOp.SetLayerLineWidth: m.RequestSetLayerLineWidthRpc(r.Layer, r.Float); return true;
+                case PlotOp.SetLayerColour: m.RequestSetLayerColourRpc(r.Layer, LayerSnapshot.UnpackColour(unchecked((uint)r.Int))); return true;
+                case PlotOp.SetLayerGlyph: m.RequestSetLayerGlyphRpc(r.Layer, r.Int); return true;
+                case PlotOp.SetLayerTimeBehaviour: m.RequestSetLayerTimeBehaviourRpc(r.Layer, (LayerTimeBehaviour)r.Int); return true;
+                case PlotOp.SetLayerEndTimeColumn: m.RequestSetLayerEndTimeColumnRpc(r.Layer, r.Int); return true;
+                case PlotOp.SetLayerLabelColumn: m.RequestSetLayerLabelColumnRpc(r.Layer, r.Int); return true;
+                case PlotOp.SetComputedAxis: m.RequestSetComputedAxisRpc(r.Layer, r.Int); return true;
+                case PlotOp.SetComputedColumn: m.RequestSetComputedColumnRpc(r.Layer, r.Int); return true;
+                default: return false;
             }
         }
 

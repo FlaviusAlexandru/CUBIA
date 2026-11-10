@@ -211,6 +211,18 @@ public class DatasetColumnar
     }
 
     /// <summary>
+    /// Category table (category index -> label) of a categorical column, or null. The array is
+    /// the dataset's own: read it, do not modify it.
+    /// </summary>
+    public string[] GetCategoryTable(int columnIndex)
+    {
+        if (columnIndex < 0 || columnIndex >= ColumnCount || columnIndex >= m_CategoryTables.Length)
+            return null;
+
+        return m_CategoryTables[columnIndex];
+    }
+
+    /// <summary>
     /// Get normalized value (0-1) for a specific cell.
     /// Computed on-demand from raw values - no storage overhead.
     /// </summary>

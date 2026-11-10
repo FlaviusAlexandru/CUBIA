@@ -244,6 +244,13 @@ namespace DataViz.Study
                 WriteRow(ChangeSource.Facilitator, action, oldValue, newValue, "", RequestTag.None);
         }
 
+        // Layer overloads (contract for WP7): the layer is not written yet; WP7 adds the Layer column.
+        public void RunAsFacilitator(string action, string layer, string oldValue, string newValue, Action apply, bool writeRow = true) =>
+            RunAsFacilitator(action, oldValue, newValue, apply, writeRow);
+
+        public void LogFacilitatorAction(string action, string layer, string oldValue, string newValue) =>
+            LogFacilitatorAction(action, oldValue, newValue);
+
         public void LogRequest(string text, RequestTag tag)
         {
             if (string.IsNullOrWhiteSpace(text) || !IsLogging)

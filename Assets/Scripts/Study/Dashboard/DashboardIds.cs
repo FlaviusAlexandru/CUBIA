@@ -28,6 +28,7 @@ namespace DataViz.Study
         public const string PreparedView2 = "view-2";              // Button (text = PreparedViews.All[1].Title)
         public const string PreparedView3 = "view-3";              // Button (text = PreparedViews.All[2].Title)
         public const string ViewsStatus = "views-status";          // Label (missing file / applied / rescan hint)
+        public const string LayeredViews = "views-layered";        // VisualElement built in code under view-1..3 (one Button per PreparedViews.Layered)
 
         // Dataset
         public const string DatasetDropdown = "dataset-list";      // DropdownField
@@ -64,6 +65,10 @@ namespace DataViz.Study
         public const string TooltipsToggle = "view-tooltips";      // Toggle
         public const string ResetPositionButton = "view-reset";    // Button
         public const string UndoButton = "view-undo";              // Button ("Undo (Ctrl+Z)")
+        public const string RedoButton = "view-redo";              // Button ("Redo (Ctrl+Y)"), built in code right after UndoButton
+
+        // Layers (LFR-26): section built in code by DashboardLayersSection, inserted after the Dataset section
+        public const string LayersSection = "layers-section";      // VisualElement (dash-section)
 
         // Request log
         public const string RequestText = "req-text";              // TextField (multiline off)

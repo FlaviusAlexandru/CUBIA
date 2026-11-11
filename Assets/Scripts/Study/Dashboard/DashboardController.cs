@@ -82,7 +82,12 @@ namespace DataViz.Study
         DropdownField m_PlaybackRate;
         // View
         Toggle m_Tooltips;
-        Button m_ResetPosition, m_Undo;
+        Button m_ResetPosition, m_Undo, m_Redo;
+        // Layers (LFR-26) and the layered prepared views (LFR-27), both built in code
+        DashboardLayersSection m_Layers;
+        readonly List<Button> m_LayeredViewButtons = new();
+        ScatterplotVisualizer m_Visualizer;
+        readonly Dictionary<string, string> m_ToastedWarnings = new(); // layer id → warning last shown as a toast
         // Request log
         TextField m_RequestText;
         RadioButtonGroup m_TagGroup;
@@ -96,7 +101,7 @@ namespace DataViz.Study
         readonly List<string> m_MissingElements = new();
         readonly List<string> m_Columns = new();
         List<string> m_Datasets = new();
-        readonly List<PlotSnapshot> m_UndoStack = new();
+        readonly DashboardUndoHistory m_History = new DashboardUndoHistory(k_MaxUndo);
         readonly List<(string text, string cssClass)> m_Recent = new(); // newest first
         List<string> m_Participants = new(); // real labels only (no placeholder), sorted
         bool m_ImportShownRunning;
@@ -163,7 +168,10 @@ namespace DataViz.Study
             {
                 m_Manager.OnDatasetLoaded += OnDatasetLoaded;
                 m_Manager.OnPlotSettingsChanged += OnPlotSettingsChanged;
+                m_Manager.OnLayersChanged += OnLayersChanged;
+                m_Manager.OnPlotMessage += OnPlotMessage;
             }
+            HookVisualizer();
             if (m_Logger != null)
             {
                 m_Logger.RowWritten += OnRowWritten;
@@ -244,6 +252,7 @@ namespace DataViz.Study
             m_Tooltips = Find<Toggle>(r, DashboardIds.TooltipsToggle);
             m_ResetPosition = Find<Button>(r, DashboardIds.ResetPositionButton);
             m_Undo = Find<Button>(r, DashboardIds.UndoButton);
+            m_Redo = BuildRedoButton();
 
             m_RequestText = Find<TextField>(r, DashboardIds.RequestText);
             m_TagGroup = Find<RadioButtonGroup>(r, DashboardIds.TagGroup);
@@ -257,9 +266,82 @@ namespace DataViz.Study
 
             m_StatusLine = Find<Label>(r, DashboardIds.StatusLine);
 
+            BuildLayeredViewButtons();
+            BuildLayersSection(r);
+
             if (m_MissingElements.Count > 0)
                 Debug.LogWarning("[DashboardController] Missing UI elements (those controls are skipped): " +
                                  string.Join(", ", m_MissingElements));
+        }
+
+        // Redo sits right after Undo in the View section's button row (LFR-29; the UXML is not edited).
+        Button BuildRedoButton()
+        {
+            if (m_Undo?.parent == null) return null;
+            var redo = new Button { name = DashboardIds.RedoButton, text = "Redo (Ctrl+Y)", tooltip = "Redo the last undone facilitator change" };
+            redo.AddToClassList("dash-button");
+            VisualElement row = m_Undo.parent;
+            row.Insert(row.IndexOf(m_Undo) + 1, redo);
+            return redo;
+        }
+
+        // One button per PreparedViews.Layered, in a new row under the three view buttons.
+        void BuildLayeredViewButtons()
+        {
+            VisualElement viewsRow = m_ViewButtons[2]?.parent ?? m_ViewButtons[0]?.parent;
+            VisualElement section = viewsRow?.parent;
+            if (section == null) return;
+            var row = new VisualElement { name = DashboardIds.LayeredViews };
+            row.AddToClassList("dash-row");
+            row.AddToClassList("dash-views");
+            foreach (PreparedView view in PreparedViews.Layered)
+            {
+                var button = new Button(() => ApplyPreparedView(view)) { text = view.Title, tooltip = LayeredTooltip(view) };
+                button.AddToClassList("dash-button");
+                button.AddToClassList("dash-view-button");
+                row.Add(button);
+                m_LayeredViewButtons.Add(button);
+            }
+            section.Insert(section.IndexOf(viewsRow) + 1, row);
+        }
+
+        static string LayeredTooltip(PreparedView view)
+        {
+            var parts = new List<string>();
+            foreach (PreparedLayer layer in view.Layers)
+            {
+                string part = layer.Part > 0 ? layer.Part.ToString(k_Inv) : "{part}";
+                parts.Add($"{layer.Name ?? layer.Kind}: {{participant}}_part{part}_{layer.Kind}{PreparedViews.Extension}");
+            }
+            return "Layers: " + string.Join("; ", parts);
+        }
+
+        // The Layers section goes right after the section that holds the dataset dropdown (B13).
+        void BuildLayersSection(VisualElement root)
+        {
+            if (m_Manager == null) return;
+            ScrollView body = root.Q<ScrollView>(DashboardIds.Body);
+            VisualElement container = body?.contentContainer;
+            VisualElement after = m_DatasetDropdown;
+            while (after != null && after.parent != container) after = after.parent;
+
+            var host = new VisualElement { name = DashboardIds.LayersSection };
+            host.AddToClassList("dash-section");
+            if (container == null)
+            {
+                Debug.LogWarning("[DashboardController] No dashboard body; Layers section not shown.");
+                return;
+            }
+            if (after != null) container.Insert(container.IndexOf(after) + 1, host);
+            else container.Add(host);
+            m_Layers = new DashboardLayersSection(host, m_Manager, FacilitateLayer);
+        }
+
+        void HookVisualizer()
+        {
+            if (m_Visualizer != null) return;
+            m_Visualizer = FindAnyObjectByType<ScatterplotVisualizer>();
+            if (m_Visualizer != null) m_Visualizer.OnFrameBuilt += OnFrameBuilt;
         }
 
         T Find<T>(VisualElement root, string name) where T : VisualElement
@@ -362,6 +444,7 @@ namespace DataViz.Study
             });
             OnClick(m_ResetPosition, ResetPlotPosition);
             OnClick(m_Undo, Undo);
+            OnClick(m_Redo, Redo);
 
             OnClick(m_LogButton, LogRequest);
             OnClick(m_MarkerButton, LogMarker);
@@ -402,7 +485,10 @@ namespace DataViz.Study
             {
                 m_Manager.OnDatasetLoaded -= OnDatasetLoaded;
                 m_Manager.OnPlotSettingsChanged -= OnPlotSettingsChanged;
+                m_Manager.OnLayersChanged -= OnLayersChanged;
+                m_Manager.OnPlotMessage -= OnPlotMessage;
             }
+            if (m_Visualizer != null) m_Visualizer.OnFrameBuilt -= OnFrameBuilt;
             if (m_Logger != null)
             {
                 m_Logger.RowWritten -= OnRowWritten;
@@ -429,6 +515,7 @@ namespace DataViz.Study
             if (Time.unscaledTime >= m_NextTick)
             {
                 m_NextTick = Time.unscaledTime + 1f;
+                HookVisualizer(); // the plot may be spawned after the dashboard
                 UpdateSessionTime();
                 UpdateStatusLine();
             }
@@ -449,8 +536,14 @@ namespace DataViz.Study
                 LogMarker();
 
             bool ctrl = keyboard.leftCtrlKey.isPressed || keyboard.rightCtrlKey.isPressed;
+            bool shift = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
             if (ctrl && keyboard.zKey.wasPressedThisFrame)
-                Undo();
+            {
+                if (shift) Redo();
+                else Undo();
+            }
+            if (ctrl && keyboard.yKey.wasPressedThisFrame)
+                Redo();
 
             bool enter = keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame;
             if (enter && (requestFocused || !anyFocused))
@@ -545,6 +638,36 @@ namespace DataViz.Study
             RefreshFromManager();
         }
 
+        void OnLayersChanged()
+        {
+            if (!m_Initialised || m_Manager == null) return;
+            m_Layers?.Refresh(true);
+        }
+
+        void OnPlotMessage(string text, PlotMessageKind kind)
+        {
+            if (!m_Initialised) return;
+            ShowToast(text, kind == PlotMessageKind.Info ? ToastKind.Info : ToastKind.Warning);
+        }
+
+        // Every rebuild (every frame during playback): only the warning lines, and a toast when a layer's warning changes.
+        void OnFrameBuilt(PlotFrame frame)
+        {
+            if (!m_Initialised || m_Manager == null) return;
+            LayerLineRenderer lines = LineRenderer();
+            m_Layers?.UpdateWarnings(frame, lines);
+            foreach (PlotLayer layer in m_Manager.Layers)
+            {
+                string warning = DashboardLayersSection.WarningFor(layer, m_Manager.Stack, frame, lines);
+                m_ToastedWarnings.TryGetValue(layer.Id, out string shown);
+                if (warning == (shown ?? "")) continue;
+                m_ToastedWarnings[layer.Id] = warning;
+                if (warning.Length > 0) ShowToast($"{layer.Name}: {warning}", ToastKind.Warning);
+            }
+        }
+
+        LayerLineRenderer LineRenderer() => m_Visualizer != null ? m_Visualizer.GetComponent<LayerLineRenderer>() : null;
+
         void RefreshFromManager()
         {
             if (!m_Initialised || m_Manager == null || m_IsUpdatingUI) return;
@@ -604,6 +727,7 @@ namespace DataViz.Study
                 // Range sliders: rebuild only when the column, dataset or committed ranges changed.
                 m_GlyphRanges?.Sync(m);
                 m_FilterRanges?.Sync(m);
+                m_Layers?.Refresh(false); // cheap unless the stack changed
             }
             finally
             {
@@ -743,13 +867,26 @@ namespace DataViz.Study
             RunAsFacilitator(action, oldValue, newValue, apply, true);
         }
 
-        void RunAsFacilitator(string action, string oldValue, string newValue, Action apply, bool writeRow)
+        /// <summary>
+        /// Facilitate for a layer change (DashboardLayersSection): <paramref name="layer"/> is the
+        /// layer's name for the Layer column, null = the active layer after apply (AddLayer, DuplicateLayer).
+        /// </summary>
+        void FacilitateLayer(string action, string layer, string oldValue, string newValue, Action apply, bool pushUndo)
+        {
+            if (m_Manager == null) return;
+            if (pushUndo) PushUndo();
+            RunAsFacilitator(action, oldValue, newValue, apply, true, true, layer);
+        }
+
+        void RunAsFacilitator(string action, string oldValue, string newValue, Action apply, bool writeRow,
+                              bool withLayer = false, string layer = null)
         {
             m_FacilitatorDepth++;
             try
             {
-                if (m_Logger != null) m_Logger.RunAsFacilitator(action, oldValue ?? "", newValue ?? "", apply, writeRow);
-                else apply();
+                if (m_Logger == null) apply();
+                else if (withLayer) m_Logger.RunAsFacilitator(action, layer, oldValue ?? "", newValue ?? "", apply, writeRow);
+                else m_Logger.RunAsFacilitator(action, oldValue ?? "", newValue ?? "", apply, writeRow);
             }
             catch (Exception e)
             {
@@ -1002,7 +1139,7 @@ namespace DataViz.Study
             {
                 drag.Active = true;
                 drag.StartValue = currentValue;
-                PushUndo(); // one snapshot per drag, taken before the first step
+                PushUndo(clearRedo: false); // one snapshot per drag, taken before the first step; redo goes only if the value changes
             }
             drag.LastChangeTime = Time.unscaledTime;
         }
@@ -1016,11 +1153,13 @@ namespace DataViz.Study
             if (m_Manager == null) return false;
             if (Mathf.Approximately(start, end))
             {
-                if (m_UndoStack.Count > 0) m_UndoStack.RemoveAt(m_UndoStack.Count - 1);
+                m_History.DropLastUndo();
                 UpdateUndoButton();
                 RefreshFromManager();
                 return false;
             }
+            m_History.ClearRedo();
+            UpdateUndoButton();
             return true;
         }
 
@@ -1043,6 +1182,7 @@ namespace DataViz.Study
                 Flash("Could not read the dataset folder");
             }
 
+            m_Layers?.SetDatasets(m_Datasets);
             if (m_DatasetDropdown == null) return;
             string selected = m_DatasetDropdown.value;
             m_DatasetDropdown.choices = new List<string>(m_Datasets);
@@ -1058,6 +1198,7 @@ namespace DataViz.Study
             if (m_Manager == null || m_DatasetDropdown == null) return;
             string file = m_DatasetDropdown.value;
             if (string.IsNullOrEmpty(file)) return;
+            // A new plot: the whole stack becomes one layer on this file (decision E4).
             Facilitate(StudyActions.LoadDataset, m_Manager.CurrentDatasetName ?? "", file,
                 () => m_Manager.RequestLoadDatasetRpc(file));
         }
@@ -1072,6 +1213,11 @@ namespace DataViz.Study
         void ApplyPreparedView(PreparedView view)
         {
             if (m_Manager == null || view == null) return;
+            if (view.Layers != null)
+            {
+                ApplyLayeredView(view);
+                return;
+            }
 
             string participant = CurrentParticipant();
             if (participant.Length == 0)
@@ -1169,6 +1315,66 @@ namespace DataViz.Study
             }
         }
 
+        /// <summary>
+        /// LFR-27: a view with a layer stack. Every file (a layer's fixed part, else the Session part)
+        /// must exist and have the view's columns before anything changes; then the stack is built in
+        /// one facilitator change: one undo step, one ApplyView row (plot-level).
+        /// </summary>
+        void ApplyLayeredView(PreparedView view)
+        {
+            string participant = CurrentParticipant();
+            if (participant.Length == 0)
+            {
+                SetViewsStatus("Pick a participant in Session first (none yet: run WAM, then Import new logs)");
+                return;
+            }
+            int part = SelectedPart();
+
+            List<string> available;
+            try
+            {
+                available = DatasetCatalog.Files() ?? new List<string>();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                SetViewsStatus("Could not read the dataset folder");
+                return;
+            }
+            string rescanHint = available.SequenceEqual(m_Datasets) ? "" : " · dataset list is out of date: press Rescan";
+
+            List<string> missing = PreparedViews.MissingFiles(view, participant, part, available);
+            if (missing.Count > 0)
+            {
+                SetViewsStatus($"{view.Title}: missing {string.Join(", ", missing)}: press Import new logs{rescanHint}");
+                return;
+            }
+            var files = new List<string>();
+            foreach (PreparedLayer layer in view.Layers)
+            {
+                string wanted = PreparedViews.FileFor(participant, part, layer);
+                files.Add(available.First(f => string.Equals(f, wanted, StringComparison.OrdinalIgnoreCase)));
+            }
+            if (!PreparedViews.CheckLayers(view, files, out string problem))
+            {
+                SetViewsStatus($"{view.Title}: {problem}");
+                return;
+            }
+
+            string error = null;
+            Facilitate(StudyActions.ApplyView, m_Manager.CurrentDatasetName ?? "", view.Title,
+                () => error = PreparedViews.ApplyLayers(m_Manager, view, files));
+            if (error != null)
+            {
+                SetViewsStatus($"{view.Title}: {error}");
+                Flash($"{view.Title}: {error}");
+            }
+            else
+            {
+                SetViewsStatus($"{view.Title} · {string.Join(" + ", files)}{rescanHint}");
+            }
+        }
+
         void SetViewsStatus(string text)
         {
             if (m_ViewsStatus != null) m_ViewsStatus.text = text;
@@ -1176,37 +1382,49 @@ namespace DataViz.Study
 
         // ---------------------------------------------------------------- undo
 
-        void PushUndo()
+        // Undo and redo restore the whole stack (LFR-29). Facilitator-only (decision E6): participant
+        // changes are never pushed, so an undo also drops what the participant did since.
+        void PushUndo(bool clearRedo = true)
         {
             if (m_Manager == null) return;
-            m_UndoStack.Add(PlotSnapshot.Capture(m_Manager));
-            if (m_UndoStack.Count > k_MaxUndo) m_UndoStack.RemoveAt(0);
+            m_History.Push(PlotSnapshot.Capture(m_Manager), clearRedo);
             UpdateUndoButton();
         }
 
-        void Undo()
+        void Undo() => StepHistory(redo: false);
+
+        void Redo() => StepHistory(redo: true);
+
+        void StepHistory(bool redo)
         {
             if (m_Manager == null) return;
-            if (m_UndoStack.Count == 0)
+            if (redo ? m_History.RedoCount == 0 : m_History.UndoCount == 0)
             {
-                Flash("Nothing to undo");
+                Flash(redo ? "Nothing to redo" : "Nothing to undo");
                 return;
             }
 
-            PlotSnapshot snapshot = m_UndoStack[m_UndoStack.Count - 1];
-            m_UndoStack.RemoveAt(m_UndoStack.Count - 1);
+            PlotSnapshot current = PlotSnapshot.Capture(m_Manager);
+            string missing = null;
+            bool Restore(PlotSnapshot snapshot)
+            {
+                missing = DashboardUndoHistory.MissingDataset(snapshot);
+                if (missing != null) return false;
+                RunAsFacilitator(redo ? StudyActions.Redo : StudyActions.Undo, "", "",
+                    () => m_Manager.ApplyNetworkSnapshot(snapshot, snapshot.TimeScrub), writeRow: true);
+                return true;
+            }
+            bool done = redo ? m_History.TryRedo(current, Restore) : m_History.TryUndo(current, Restore);
+            if (!done && missing != null)
+                Flash($"{(redo ? "Redo" : "Undo")} not possible: {missing} in that state could not be loaded");
             UpdateUndoButton();
-
-            if (snapshot.DatasetName != (m_Manager.CurrentDatasetName ?? ""))
-            {
-                Flash("Undo not possible after a dataset change");
-                return;
-            }
-            RunAsFacilitator(StudyActions.Undo, "", "",
-                () => m_Manager.ApplyNetworkSnapshot(snapshot, snapshot.TimeScrub), writeRow: true);
         }
 
-        void UpdateUndoButton() => m_Undo?.SetEnabled(m_UndoStack.Count > 0);
+        void UpdateUndoButton()
+        {
+            m_Undo?.SetEnabled(m_History.UndoCount > 0);
+            m_Redo?.SetEnabled(m_History.RedoCount > 0);
+        }
 
         // ================================================================== session
 
@@ -1283,6 +1501,8 @@ namespace DataViz.Study
             }
             for (int i = 0; i < m_ViewButtons.Length; i++)
                 m_ViewButtons[i]?.SetEnabled(logging || HasParticipants);
+            foreach (Button button in m_LayeredViewButtons)
+                button.SetEnabled(logging || HasParticipants);
 
             m_LogButton?.SetEnabled(logging);
             m_MarkerButton?.SetEnabled(logging);
@@ -1561,42 +1781,32 @@ namespace DataViz.Study
         {
             if (m_FacilitatorDepth > 0 || IsLogging) return;
             PlotSnapshot now = PlotSnapshot.Capture(m_Manager);
-            string action = NameChange(m_LastSnapshot, now);
+            if (m_LastSnapshot != null && PlotStateDiff.HasRelevantChange(m_LastSnapshot, now))
+            {
+                // The same naming the logger uses for participant rows (WP7), first change only.
+                List<LayerChange> changes = PlotStateDiff.DescribeStack(m_LastSnapshot, now, DatasetOf);
+                if (changes.Count > 0)
+                {
+                    LayerChange first = changes[0];
+                    m_LastChange = string.IsNullOrEmpty(first.Layer)
+                        ? $"participant {first.Action}"
+                        : $"participant {first.Action} ({first.Layer})";
+                }
+                else
+                {
+                    m_LastChange = $"participant {StudyActions.Unknown}";
+                }
+            }
             m_LastSnapshot = now;
-            if (action != null) m_LastChange = $"participant {action}";
         }
 
-        static string NameChange(PlotSnapshot a, PlotSnapshot b)
+        // Column names for DescribeStack: a layer's own dataset instance, else the registry's cached one.
+        DatasetColumnar DatasetOf(string fileName)
         {
-            if (a == null || b == null) return null;
-            if (a.DatasetName != b.DatasetName) return StudyActions.LoadDataset;
-            if (a.XColumn != b.XColumn) return StudyActions.SetX;
-            if (a.YColumn != b.YColumn) return StudyActions.SetY;
-            if (a.ZColumn != b.ZColumn) return StudyActions.SetZ;
-            if (a.ColourColumn != b.ColourColumn) return StudyActions.SetColor;
-            if (a.SizeColumn != b.SizeColumn) return StudyActions.SetSize;
-            if (a.SizeMapped != b.SizeMapped) return StudyActions.SetSizeMapped;
-            if (a.TimeColumn != b.TimeColumn) return StudyActions.SetTime;
-            if (a.GlyphColumn != b.GlyphColumn) return StudyActions.SetGlyphColumn;
-            if (!a.GlyphLabels.SequenceEqual(b.GlyphLabels) || !a.GlyphIndices.SequenceEqual(b.GlyphIndices))
-                return StudyActions.AssignGlyph;
-            if (!a.RangeGlyphs.SequenceEqual(b.RangeGlyphs) || !a.RangeMins.SequenceEqual(b.RangeMins) ||
-                !a.RangeMaxs.SequenceEqual(b.RangeMaxs))
-                return StudyActions.SetGlyphRanges;
-            if (a.PointSize != b.PointSize) return StudyActions.SetPointSize;
-            if (a.FilterColumns.Length < b.FilterColumns.Length) return StudyActions.AddFilter;
-            if (a.FilterColumns.Length > b.FilterColumns.Length)
-                return b.FilterColumns.Length == 0 ? StudyActions.ClearFilters : StudyActions.RemoveFilter;
-            if (!a.FilterColumns.SequenceEqual(b.FilterColumns)) return StudyActions.SetFilterColumn;
-            if (!a.FilterLabels.SequenceEqual(b.FilterLabels)) return StudyActions.SetFilterValue;
-            if (!a.FilterRangeCounts.SequenceEqual(b.FilterRangeCounts) || !a.FilterRangeMins.SequenceEqual(b.FilterRangeMins) ||
-                !a.FilterRangeMaxs.SequenceEqual(b.FilterRangeMaxs))
-                return StudyActions.SetFilterRanges;
-            if (a.PlaybackRate != b.PlaybackRate) return StudyActions.SetPlaybackRate;
-            if (a.IsPlaying != b.IsPlaying)
-                return !b.IsPlaying && b.TimeScrub >= 1f ? null : (b.IsPlaying ? StudyActions.Play : StudyActions.Pause); // playback reaching the end is not a change
-            if (a.TimeScrub != b.TimeScrub && !b.IsPlaying) return StudyActions.Scrub;
-            return a.SamePlotAs(b) ? null : StudyActions.Unknown;
+            if (string.IsNullOrEmpty(fileName)) return null;
+            foreach (PlotLayer layer in m_Manager.Layers)
+                if (layer.Dataset != null && layer.DatasetName == fileName) return layer.Dataset;
+            return DatasetRegistry.Get(fileName);
         }
 
         void Flash(string message)
@@ -1616,6 +1826,11 @@ namespace DataViz.Study
             else if (m_Manager.Filters.Count == 0) rows = $"{dataset.RowCount.ToString("N0", k_Inv)} rows shown";
             else rows = $"{dataset.RowCount.ToString("N0", k_Inv)} rows (filtered)"; // filtering itself stays in the renderer
 
+            int layerCount = m_Manager.Layers.Count;
+            if (layerCount != 1) rows = $"{rows} · {layerCount.ToString(k_Inv)} layers";
+            string warning = FirstLayerWarning();
+            if (warning != null) rows = $"{rows} · ⚠ {warning}";
+
             string text = m_LastChange != null ? $"{rows} · last change: {m_LastChange}" : rows;
             if (m_Flash != null)
             {
@@ -1623,6 +1838,21 @@ namespace DataViz.Study
                 else m_Flash = null;
             }
             if (m_StatusLine.text != text) m_StatusLine.text = text;
+        }
+
+        // "<layer>: <first line of its warning>" for the first layer with one, else null.
+        string FirstLayerWarning()
+        {
+            PlotFrame frame = m_Visualizer != null ? m_Visualizer.LastFrame : null;
+            LayerLineRenderer lines = LineRenderer();
+            foreach (PlotLayer layer in m_Manager.Layers)
+            {
+                string warning = DashboardLayersSection.WarningFor(layer, m_Manager.Stack, frame, lines);
+                if (warning.Length == 0) continue;
+                int newline = warning.IndexOf('\n');
+                return $"{layer.Name}: {(newline >= 0 ? warning.Substring(0, newline) : warning)}";
+            }
+            return null;
         }
 
         // ================================================================== toasts
@@ -1722,6 +1952,72 @@ namespace DataViz.Study
                 m_MinimiseButton.text = minimised ? "Dashboard" : "–";
                 m_MinimiseButton.tooltip = minimised ? "Show dashboard (F1)" : "Minimise (F1)";
             }
+        }
+    }
+
+    /// <summary>
+    /// The dashboard's undo and redo stacks of whole-plot snapshots (LFR-29), apart from the UI so
+    /// edit-mode tests can drive it. A new facilitator change clears redo; undo moves the current
+    /// state to redo and back. Restoring is the caller's (it runs inside RunAsFacilitator).
+    /// </summary>
+    public sealed class DashboardUndoHistory
+    {
+        readonly int m_Cap;
+        readonly List<PlotSnapshot> m_Undo = new();
+        readonly List<PlotSnapshot> m_Redo = new();
+
+        public DashboardUndoHistory(int cap) => m_Cap = Math.Max(1, cap);
+
+        public int UndoCount => m_Undo.Count;
+        public int RedoCount => m_Redo.Count;
+
+        /// <summary>The state before a facilitator change. clearRedo false only for a slider drag that may still end where it began.</summary>
+        public void Push(PlotSnapshot before, bool clearRedo = true)
+        {
+            if (before == null) return;
+            m_Undo.Add(before);
+            if (m_Undo.Count > m_Cap) m_Undo.RemoveAt(0);
+            if (clearRedo) m_Redo.Clear();
+        }
+
+        public void DropLastUndo()
+        {
+            if (m_Undo.Count > 0) m_Undo.RemoveAt(m_Undo.Count - 1);
+        }
+
+        public void ClearRedo() => m_Redo.Clear();
+
+        /// <summary>Restores the last undo snapshot through <paramref name="restore"/>; when it returns false nothing moves.</summary>
+        public bool TryUndo(PlotSnapshot current, Func<PlotSnapshot, bool> restore) => Step(m_Undo, m_Redo, current, restore);
+
+        /// <summary>Restores the last undone state; current goes back on the undo stack.</summary>
+        public bool TryRedo(PlotSnapshot current, Func<PlotSnapshot, bool> restore) => Step(m_Redo, m_Undo, current, restore);
+
+        bool Step(List<PlotSnapshot> from, List<PlotSnapshot> to, PlotSnapshot current, Func<PlotSnapshot, bool> restore)
+        {
+            if (from.Count == 0 || current == null || restore == null) return false;
+            PlotSnapshot target = from[from.Count - 1];
+            if (!restore(target)) return false;
+            from.RemoveAt(from.Count - 1);
+            to.Add(current);
+            if (to.Count > m_Cap) to.RemoveAt(0);
+            return true;
+        }
+
+        /// <summary>
+        /// The first dataset file of a snapshot's dataset/subset layers that cannot be loaded here
+        /// (DatasetRegistry.Get), or null. Replaces the old "Undo not possible after a dataset change":
+        /// PlotSnapshot.WriteTo restores datasets itself now.
+        /// </summary>
+        public static string MissingDataset(PlotSnapshot snapshot)
+        {
+            if (snapshot?.Layers == null) return null;
+            foreach (LayerSnapshot layer in snapshot.Layers)
+            {
+                if (layer == null || (LayerKind)layer.Kind == LayerKind.Computed || string.IsNullOrEmpty(layer.DatasetName)) continue;
+                if (DatasetRegistry.Get(layer.DatasetName) == null) return layer.DatasetName;
+            }
+            return null;
         }
     }
 }

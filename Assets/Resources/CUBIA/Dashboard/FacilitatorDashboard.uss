@@ -93,6 +93,18 @@
     -unity-text-align: middle-right;
 }
 
+/* ---------------------------------------------------------------- prepared views */
+
+.dash-views {
+    flex-wrap: wrap;
+}
+
+.dash-root .dash-view-button {
+    flex-grow: 1;
+    flex-basis: 30%;
+    min-width: 100px;
+}
+
 /* ---------------------------------------------------------------- fields (override the default theme) */
 
 .dash-root .unity-base-field {

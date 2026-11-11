@@ -34,7 +34,6 @@ namespace DataViz.Study
         const int k_RecentRows = 10;
         const float k_SliderCommitDelay = 0.4f;
         const float k_FlashSeconds = 4f;
-        const string k_NoParticipants = "No participants yet";
         const int k_MaxVisibleToasts = 4;
         const int k_MaxQueuedToasts = 20; // older ones beyond this are dropped
         const int k_MaxToastChars = 400;   // full text stays in the Console
@@ -55,14 +54,10 @@ namespace DataViz.Study
         Button m_MinimiseButton;
         VisualElement m_ToastArea;
         // Session
-        DropdownField m_ParticipantField;
-        TextField m_LogFolderField;
+        TextField m_ParticipantField, m_LogFolderField;
         DropdownField m_PartField;
-        Button m_SessionButton, m_LogFolderApply, m_ImportButton;
+        Button m_SessionButton, m_LogFolderApply;
         Label m_SessionTime, m_SessionStatus;
-        // Prepared views (index i = PreparedViews.All[i])
-        readonly Button[] m_ViewButtons = new Button[3];
-        Label m_ViewsStatus;
         // Dataset
         DropdownField m_DatasetDropdown;
         Button m_DatasetRescan, m_DatasetLoad;
@@ -83,9 +78,8 @@ namespace DataViz.Study
         // View
         Toggle m_Tooltips;
         Button m_ResetPosition, m_Undo, m_Redo;
-        // Layers (LFR-26) and the layered prepared views (LFR-27), both built in code
+        // Layers (LFR-26), built in code
         DashboardLayersSection m_Layers;
-        readonly List<Button> m_LayeredViewButtons = new();
         ScatterplotVisualizer m_Visualizer;
         readonly Dictionary<string, string> m_ToastedWarnings = new(); // layer id → warning last shown as a toast
         // Request log
@@ -103,8 +97,6 @@ namespace DataViz.Study
         List<string> m_Datasets = new();
         readonly DashboardUndoHistory m_History = new DashboardUndoHistory(k_MaxUndo);
         readonly List<(string text, string cssClass)> m_Recent = new(); // newest first
-        List<string> m_Participants = new(); // real labels only (no placeholder), sorted
-        bool m_ImportShownRunning;
 
         /// <summary>One toast; Remaining counts down only while it is among the visible ones.</summary>
         sealed class Toast
@@ -177,24 +169,18 @@ namespace DataViz.Study
                 m_Logger.RowWritten += OnRowWritten;
                 m_Logger.SessionStateChanged += RefreshSession;
                 if (m_LogFolderField != null) m_LogFolderField.SetValueWithoutNotify(m_Logger.LogFolder ?? "");
+                if (m_ParticipantField != null && !string.IsNullOrEmpty(m_Logger.ParticipantId))
+                    m_ParticipantField.SetValueWithoutNotify(m_Logger.ParticipantId);
                 if (m_PartField != null && m_Logger.Part >= 1 && m_Logger.Part <= 2)
                     m_PartField.SetValueWithoutNotify(m_Logger.Part.ToString(k_Inv));
             }
 
-            WamIaAutoImporter.Completed += OnImportCompleted;
-
             m_Initialised = true;
             RescanDatasets();
-            // Meta files give the list at once; the converter's own list follows on Completed.
-            RefreshParticipants(WamIaAutoImporter.Last?.participants);
-            if (m_Logger != null && !string.IsNullOrEmpty(m_Logger.ParticipantId))
-                SelectParticipant(PreparedViews.NormaliseParticipant(m_Logger.ParticipantId));
             OnDatasetLoaded();
             RefreshSession();
-            RefreshViewsStatus();
             RebuildRecentList();
             UpdateUndoButton();
-            UpdateImportButton();
         }
 
         void QueryElements(VisualElement r)
@@ -205,19 +191,13 @@ namespace DataViz.Study
             m_ToastArea = Find<VisualElement>(r, DashboardIds.ToastArea);
             if (m_ToastArea != null) m_ToastArea.pickingMode = PickingMode.Ignore; // the gaps between toasts stay click-through
 
-            m_ParticipantField = Find<DropdownField>(r, DashboardIds.ParticipantField);
-            m_ImportButton = Find<Button>(r, DashboardIds.ImportButton);
+            m_ParticipantField = Find<TextField>(r, DashboardIds.ParticipantField);
             m_PartField = Find<DropdownField>(r, DashboardIds.PartField);
             m_SessionButton = Find<Button>(r, DashboardIds.SessionButton);
             m_SessionTime = Find<Label>(r, DashboardIds.SessionTime);
             m_LogFolderField = Find<TextField>(r, DashboardIds.LogFolderField);
             m_LogFolderApply = Find<Button>(r, DashboardIds.LogFolderApply);
             m_SessionStatus = Find<Label>(r, DashboardIds.SessionStatus);
-
-            m_ViewButtons[0] = Find<Button>(r, DashboardIds.PreparedView1);
-            m_ViewButtons[1] = Find<Button>(r, DashboardIds.PreparedView2);
-            m_ViewButtons[2] = Find<Button>(r, DashboardIds.PreparedView3);
-            m_ViewsStatus = Find<Label>(r, DashboardIds.ViewsStatus);
 
             m_DatasetDropdown = Find<DropdownField>(r, DashboardIds.DatasetDropdown);
             m_DatasetRescan = Find<Button>(r, DashboardIds.DatasetRescan);
@@ -266,7 +246,6 @@ namespace DataViz.Study
 
             m_StatusLine = Find<Label>(r, DashboardIds.StatusLine);
 
-            BuildLayeredViewButtons();
             BuildLayersSection(r);
 
             if (m_MissingElements.Count > 0)
@@ -283,37 +262,6 @@ namespace DataViz.Study
             VisualElement row = m_Undo.parent;
             row.Insert(row.IndexOf(m_Undo) + 1, redo);
             return redo;
-        }
-
-        // One button per PreparedViews.Layered, in a new row under the three view buttons.
-        void BuildLayeredViewButtons()
-        {
-            VisualElement viewsRow = m_ViewButtons[2]?.parent ?? m_ViewButtons[0]?.parent;
-            VisualElement section = viewsRow?.parent;
-            if (section == null) return;
-            var row = new VisualElement { name = DashboardIds.LayeredViews };
-            row.AddToClassList("dash-row");
-            row.AddToClassList("dash-views");
-            foreach (PreparedView view in PreparedViews.Layered)
-            {
-                var button = new Button(() => ApplyPreparedView(view)) { text = view.Title, tooltip = LayeredTooltip(view) };
-                button.AddToClassList("dash-button");
-                button.AddToClassList("dash-view-button");
-                row.Add(button);
-                m_LayeredViewButtons.Add(button);
-            }
-            section.Insert(section.IndexOf(viewsRow) + 1, row);
-        }
-
-        static string LayeredTooltip(PreparedView view)
-        {
-            var parts = new List<string>();
-            foreach (PreparedLayer layer in view.Layers)
-            {
-                string part = layer.Part > 0 ? layer.Part.ToString(k_Inv) : "{part}";
-                parts.Add($"{layer.Name ?? layer.Kind}: {{participant}}_part{part}_{layer.Kind}{PreparedViews.Extension}");
-            }
-            return "Layers: " + string.Join("; ", parts);
         }
 
         // The Layers section goes right after the section that holds the dataset dropdown (B13).
@@ -370,19 +318,6 @@ namespace DataViz.Study
                 m_TimeScrub.lowValue = 0f;
                 m_TimeScrub.highValue = 1f;
             }
-            for (int i = 0; i < m_ViewButtons.Length; i++)
-            {
-                if (m_ViewButtons[i] == null) continue;
-                if (i < PreparedViews.All.Count)
-                {
-                    m_ViewButtons[i].text = PreparedViews.All[i].Title;
-                    m_ViewButtons[i].tooltip = $"Loads {{participant}}_part{{part}}_{PreparedViews.All[i].Kind}{PreparedViews.Extension}";
-                }
-                else
-                {
-                    m_ViewButtons[i].style.display = DisplayStyle.None;
-                }
-            }
             if (m_PlaybackRate != null)
             {
                 m_PlaybackRate.choices = MultiplayerScatterplotManager.PlaybackRateOptions.Select(r => FormatRate(r)).ToList();
@@ -401,16 +336,6 @@ namespace DataViz.Study
 
             OnClick(m_SessionButton, ToggleSession);
             OnClick(m_LogFolderApply, ApplyLogFolder);
-            OnClick(m_ImportButton, StartImport);
-            // Not through OnChoice: these only change what the prepared views will load.
-            m_ParticipantField?.RegisterValueChangedCallback(_ => RefreshViewsStatus());
-            m_PartField?.RegisterValueChangedCallback(_ => RefreshViewsStatus());
-
-            for (int i = 0; i < m_ViewButtons.Length && i < PreparedViews.All.Count; i++)
-            {
-                PreparedView view = PreparedViews.All[i];
-                OnClick(m_ViewButtons[i], () => ApplyPreparedView(view));
-            }
 
             OnClick(m_DatasetRescan, RescanDatasets);
             OnClick(m_DatasetLoad, LoadSelectedDataset);
@@ -494,7 +419,6 @@ namespace DataViz.Study
                 m_Logger.RowWritten -= OnRowWritten;
                 m_Logger.SessionStateChanged -= RefreshSession;
             }
-            WamIaAutoImporter.Completed -= OnImportCompleted;
             if (OwnedPanelSettings != null)
                 Destroy(OwnedPanelSettings);
         }
@@ -509,8 +433,6 @@ namespace DataViz.Study
             CheckSliderCommit(m_PointDrag, CommitPointSize);
             CheckSliderCommit(m_ScrubDrag, CommitScrub);
             UpdateToasts();
-            // Runs also start from the bootstrap and other callers, so follow IsRunning here.
-            if (m_ImportShownRunning != WamIaAutoImporter.IsRunning) UpdateImportButton();
 
             if (Time.unscaledTime >= m_NextTick)
             {
@@ -530,7 +452,7 @@ namespace DataViz.Study
                 ToggleMinimised();
 
             GetFocus(out bool anyFocused, out bool requestFocused, out bool otherTextFocused);
-            if (otherTextFocused) return; // typing in the log folder field: keys belong to it
+            if (otherTextFocused) return; // typing in participant / folder field: keys belong to it
 
             if (keyboard.f9Key.wasPressedThisFrame)
                 LogMarker();
@@ -1203,183 +1125,6 @@ namespace DataViz.Study
                 () => m_Manager.RequestLoadDatasetRpc(file));
         }
 
-        // ---------------------------------------------------------------- prepared views
-
-        /// <summary>
-        /// Loads {participant}_part{part}_{kind}.cdataset (participant and part from the Session
-        /// fields, logging or not) and sets every mapping of the view in one facilitator change:
-        /// one undo snapshot, one ApplyView row.
-        /// </summary>
-        void ApplyPreparedView(PreparedView view)
-        {
-            if (m_Manager == null || view == null) return;
-            if (view.Layers != null)
-            {
-                ApplyLayeredView(view);
-                return;
-            }
-
-            string participant = CurrentParticipant();
-            if (participant.Length == 0)
-            {
-                SetViewsStatus("Pick a participant in Session first (none yet: run WAM, then Import new logs)");
-                return;
-            }
-            int part = SelectedPart();
-
-            string wanted = PreparedViews.FileFor(participant, part, view.Kind);
-            string who = $"{PreparedViews.NormaliseParticipant(participant)} part {part.ToString(k_Inv)}";
-
-            List<string> files;
-            try
-            {
-                files = DatasetCatalog.Files() ?? new List<string>(); // fresh: the converter may have just run
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                SetViewsStatus("Could not read the dataset folder");
-                return;
-            }
-            string file = files.FirstOrDefault(f => string.Equals(f, wanted, StringComparison.OrdinalIgnoreCase));
-            string rescanHint = files.SequenceEqual(m_Datasets) ? "" : " · dataset list is out of date: press Rescan";
-            if (file == null)
-            {
-                SetViewsStatus($"{who} not imported yet (missing {wanted}): press Import new logs{rescanHint}");
-                return;
-            }
-
-            // Same dataset already loaded: check the columns before writing a row or an undo snapshot.
-            bool reload = !string.Equals(m_Manager.CurrentDatasetName ?? "", file, StringComparison.Ordinal) ||
-                          m_Manager.LoadedDataset == null;
-            if (!reload && !PreparedViews.TryResolve(view, m_Manager.LoadedDataset,
-                    out _, out _, out _, out _, out _, out _, out _, out string missingNow))
-            {
-                SetViewsStatus($"{file} has no column {missingNow}: re-run the converter");
-                return;
-            }
-
-            string error = null;
-            string oldValue = m_Manager.CurrentDatasetName ?? "";
-            Facilitate(StudyActions.ApplyView, oldValue, view.Title, () =>
-            {
-                MultiplayerScatterplotManager m = m_Manager;
-                if (reload)
-                {
-                    m.RequestLoadDatasetRpc(file); // synchronous on the host: LoadedDataset is set afterwards
-                    if (m.LoadedDataset == null || !string.Equals(m.CurrentDatasetName ?? "", file, StringComparison.Ordinal))
-                    {
-                        error = $"Could not load {file} (see Console)";
-                        return;
-                    }
-                }
-
-                if (!PreparedViews.TryResolve(view, m.LoadedDataset, out int x, out int y, out int z,
-                        out int color, out int size, out int time, out int glyph, out string missing))
-                {
-                    error = $"{file} has no column {missing}: re-run the converter";
-                    return;
-                }
-
-                if (m.Filters.Count > 0) m.RequestClearFiltersRpc(); // a view shows every row
-                if (x >= 0) m.RequestXColumnRpc(x);
-                if (y >= 0) m.RequestYColumnRpc(y);
-                if (z >= 0) m.RequestZColumnRpc(z);
-                m.RequestColorColumnRpc(color);
-                if (size >= 0)
-                {
-                    m.RequestSizeColumnRpc(size);
-                    m.RequestSizeMappedRpc(true);
-                }
-                else
-                {
-                    m.RequestSizeMappedRpc(false);
-                }
-                m.RequestTimeColumnRpc(time); // also stops playback
-                m.RequestGlyphColumnRpc(glyph);
-                if (glyph >= 0 && view.GlyphShapes != null)
-                    foreach ((string label, int shape) in view.GlyphShapes)
-                        m.RequestGlyphAssignmentRpc(label, shape);
-                if (m.IsPlaying) m.RequestPlaybackToggleRpc(false);
-                m.RequestTimeScrubRpc(0f);
-            });
-
-            if (error != null)
-            {
-                SetViewsStatus(error);
-                Flash($"{view.Title}: {error}");
-            }
-            else
-            {
-                SetViewsStatus($"{view.Title} · {file}{rescanHint}");
-            }
-        }
-
-        /// <summary>
-        /// LFR-27: a view with a layer stack. Every file (a layer's fixed part, else the Session part)
-        /// must exist and have the view's columns before anything changes; then the stack is built in
-        /// one facilitator change: one undo step, one ApplyView row (plot-level).
-        /// </summary>
-        void ApplyLayeredView(PreparedView view)
-        {
-            string participant = CurrentParticipant();
-            if (participant.Length == 0)
-            {
-                SetViewsStatus("Pick a participant in Session first (none yet: run WAM, then Import new logs)");
-                return;
-            }
-            int part = SelectedPart();
-
-            List<string> available;
-            try
-            {
-                available = DatasetCatalog.Files() ?? new List<string>();
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                SetViewsStatus("Could not read the dataset folder");
-                return;
-            }
-            string rescanHint = available.SequenceEqual(m_Datasets) ? "" : " · dataset list is out of date: press Rescan";
-
-            List<string> missing = PreparedViews.MissingFiles(view, participant, part, available);
-            if (missing.Count > 0)
-            {
-                SetViewsStatus($"{view.Title}: missing {string.Join(", ", missing)}: press Import new logs{rescanHint}");
-                return;
-            }
-            var files = new List<string>();
-            foreach (PreparedLayer layer in view.Layers)
-            {
-                string wanted = PreparedViews.FileFor(participant, part, layer);
-                files.Add(available.First(f => string.Equals(f, wanted, StringComparison.OrdinalIgnoreCase)));
-            }
-            if (!PreparedViews.CheckLayers(view, files, out string problem))
-            {
-                SetViewsStatus($"{view.Title}: {problem}");
-                return;
-            }
-
-            string error = null;
-            Facilitate(StudyActions.ApplyView, m_Manager.CurrentDatasetName ?? "", view.Title,
-                () => error = PreparedViews.ApplyLayers(m_Manager, view, files));
-            if (error != null)
-            {
-                SetViewsStatus($"{view.Title}: {error}");
-                Flash($"{view.Title}: {error}");
-            }
-            else
-            {
-                SetViewsStatus($"{view.Title} · {string.Join(" + ", files)}{rescanHint}");
-            }
-        }
-
-        void SetViewsStatus(string text)
-        {
-            if (m_ViewsStatus != null) m_ViewsStatus.text = text;
-        }
-
         // ---------------------------------------------------------------- undo
 
         // Undo and redo restore the whole stack (LFR-29). Facilitator-only (decision E6): participant
@@ -1444,14 +1189,11 @@ namespace DataViz.Study
             }
             else
             {
-                string participant = SelectedParticipant();
-                if (participant.Length == 0)
-                {
-                    m_SessionMessage = "No participant selected: run WAM, then Import new logs";
-                    RefreshSession();
-                    return;
-                }
-                m_SessionMessage = m_Logger.StartSession(participant, SelectedPart(), out string error) ? null : error;
+                string participant = m_ParticipantField != null ? (m_ParticipantField.value ?? "").Trim() : "";
+                int part = 1;
+                if (m_PartField != null && !int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out part))
+                    part = 1;
+                m_SessionMessage = m_Logger.StartSession(participant, part, out string error) ? null : error;
             }
             RefreshSession();
         }
@@ -1479,10 +1221,9 @@ namespace DataViz.Study
             if (m_SessionButton != null)
             {
                 m_SessionButton.text = logging ? "Stop logging" : "Start logging";
-                // Stopping must always work; starting needs a participant from the WAM logs.
-                m_SessionButton.SetEnabled(m_Logger != null && (logging || HasParticipants));
+                m_SessionButton.SetEnabled(m_Logger != null);
             }
-            m_ParticipantField?.SetEnabled(!logging && HasParticipants);
+            m_ParticipantField?.SetEnabled(!logging);
             m_PartField?.SetEnabled(!logging);
             m_LogFolderField?.SetEnabled(!logging);
             m_LogFolderApply?.SetEnabled(!logging && m_Logger != null);
@@ -1493,16 +1234,9 @@ namespace DataViz.Study
                     ? Path.GetFileName(m_Logger.CurrentFilePath) : null;
                 if (!string.IsNullOrEmpty(m_SessionMessage))
                     m_SessionStatus.text = file != null ? $"{m_SessionMessage} · {file}" : m_SessionMessage;
-                else if (file != null)
-                    m_SessionStatus.text = $"Logging to {file}";
                 else
-                    m_SessionStatus.text = HasParticipants ? "Not logging"
-                        : "Not logging · no participants yet: run a WAM session, then press Import new logs";
+                    m_SessionStatus.text = file != null ? $"Logging to {file}" : "Not logging";
             }
-            for (int i = 0; i < m_ViewButtons.Length; i++)
-                m_ViewButtons[i]?.SetEnabled(logging || HasParticipants);
-            foreach (Button button in m_LayeredViewButtons)
-                button.SetEnabled(logging || HasParticipants);
 
             m_LogButton?.SetEnabled(logging);
             m_MarkerButton?.SetEnabled(logging);
@@ -1520,144 +1254,6 @@ namespace DataViz.Study
             double seconds = IsLogging ? Math.Max(0d, m_Logger.SessionTime) : 0d;
             int total = (int)seconds;
             m_SessionTime.text = $"{total / 60:00}:{total % 60:00}";
-        }
-
-        // ================================================================== participants + WAM import
-
-        bool HasParticipants => m_Participants.Count > 0;
-
-        /// <summary>The dropdown's participant label ("P07"), or "" when there is none (placeholder shown).</summary>
-        string SelectedParticipant()
-        {
-            if (m_ParticipantField == null || !HasParticipants) return "";
-            string value = (m_ParticipantField.value ?? "").Trim();
-            return m_Participants.Contains(value) ? value : "";
-        }
-
-        /// <summary>The selected participant, or the logging session's one when nothing is selected.</summary>
-        string CurrentParticipant()
-        {
-            string participant = SelectedParticipant();
-            if (participant.Length == 0 && IsLogging)
-                participant = m_Logger.ParticipantId ?? "";
-            return participant;
-        }
-
-        int SelectedPart()
-        {
-            if (m_PartField != null && int.TryParse(m_PartField.value, NumberStyles.Integer, k_Inv, out int part))
-                return part;
-            return 1;
-        }
-
-        /// <summary>
-        /// Rebuilds the participant choices: labels from the WAM Meta files plus <paramref name="extra"/>
-        /// (the converter's list) plus the logging session's participant. Keeps the current selection
-        /// when it still exists, otherwise picks the highest participant number. With no participants
-        /// a single disabled "No participants yet" choice is shown.
-        /// </summary>
-        void RefreshParticipants(IEnumerable<string> extra)
-        {
-            var all = new List<string>(WamIaAutoImporter.ScanParticipants(WamIaAutoImporter.LogFolder));
-            if (extra != null) all.AddRange(extra); // already labels: ParticipantLabel is not idempotent for "Pabc"
-            if (IsLogging && !string.IsNullOrEmpty(m_Logger.ParticipantId))
-                all.Add(PreparedViews.NormaliseParticipant(m_Logger.ParticipantId));
-
-            string current = SelectedParticipant();
-            m_Participants = WamIaAutoImporter.SortParticipants(all);
-
-            if (m_ParticipantField != null)
-            {
-                if (m_Participants.Count == 0)
-                {
-                    m_ParticipantField.choices = new List<string> { k_NoParticipants };
-                    m_ParticipantField.SetValueWithoutNotify(k_NoParticipants);
-                }
-                else
-                {
-                    m_ParticipantField.choices = new List<string>(m_Participants);
-                    string pick = m_Participants.Contains(current) ? current : WamIaAutoImporter.DefaultParticipant(m_Participants);
-                    m_ParticipantField.SetValueWithoutNotify(pick ?? m_Participants[0]);
-                }
-            }
-            RefreshSession();
-        }
-
-        void SelectParticipant(string label)
-        {
-            if (m_ParticipantField == null || string.IsNullOrEmpty(label) || !m_Participants.Contains(label)) return;
-            m_ParticipantField.SetValueWithoutNotify(label);
-        }
-
-        /// <summary>Which prepared-view files exist for the selected participant and part.</summary>
-        void RefreshViewsStatus()
-        {
-            if (!m_Initialised) return;
-            string participant = CurrentParticipant();
-            if (participant.Length == 0)
-            {
-                SetViewsStatus("No participants yet: run a WAM session, then press Import new logs");
-                return;
-            }
-
-            int part = SelectedPart();
-            List<string> files;
-            try
-            {
-                files = DatasetCatalog.Files() ?? new List<string>();
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                SetViewsStatus("Could not read the dataset folder");
-                return;
-            }
-
-            string who = $"{PreparedViews.NormaliseParticipant(participant)} part {part.ToString(k_Inv)}";
-            List<string> missing = PreparedViews.MissingFiles(participant, part, files);
-            if (missing.Count == 0)
-                SetViewsStatus($"{who}: all views ready");
-            else if (missing.Count >= PreparedViews.All.Count)
-                SetViewsStatus($"{who} not imported yet: press Import new logs after the WAM session");
-            else
-                SetViewsStatus($"{who}: missing {string.Join(", ", missing)}");
-        }
-
-        void StartImport()
-        {
-            WamIaAutoImporter.Run(null); // results arrive through Completed (OnImportCompleted)
-            UpdateImportButton();
-        }
-
-        void UpdateImportButton()
-        {
-            bool running = WamIaAutoImporter.IsRunning;
-            m_ImportShownRunning = running;
-            if (m_ImportButton == null) return;
-            m_ImportButton.text = running ? "Importing…" : "Import new logs";
-            m_ImportButton.SetEnabled(!running);
-            m_ImportButton.tooltip = $"Converts new WAM logs from {WamIaAutoImporter.LogFolder}";
-        }
-
-        /// <summary>Toasts for what changed, then the participant, dataset and prepared-view lists.</summary>
-        void OnImportCompleted(WamIaImportResult result)
-        {
-            if (!m_Initialised || result == null) return;
-
-            // Pushed oldest-kind first so errors end up on top (newest on top).
-            foreach (WamIaConverted c in result.converted)
-                if (c != null) ShowToast("Imported " + WamIaAutoImporter.PartName(c.participant, c.part), ToastKind.Info);
-            foreach (WamIaReplaced r in result.replaced)
-                if (r != null) ShowToast(WamIaAutoImporter.ReplacedMessage(r), ToastKind.Warning);
-            foreach (string warning in result.warnings)
-                if (!string.IsNullOrEmpty(warning)) ShowToast(warning, ToastKind.Warning);
-            foreach (string error in result.errors)
-                if (!string.IsNullOrEmpty(error)) ShowToast(error, ToastKind.Error);
-
-            RefreshParticipants(result.participants);
-            if (result.HasChanges) RescanDatasets();
-            RefreshViewsStatus();
-            UpdateImportButton();
         }
 
         // ================================================================== request log

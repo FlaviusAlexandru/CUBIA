@@ -14,21 +14,13 @@ namespace DataViz.Study
         public const string ToastArea = "dash-toasts";              // VisualElement (picking-mode Ignore; toasts added by DashboardController.ShowToast)
 
         // Session
-        public const string ParticipantField = "session-participant"; // DropdownField (labels from the WAM Meta logs, "P07")
-        public const string ImportButton = "session-import";          // Button ("Import new logs" / "Importing…")
+        public const string ParticipantField = "session-participant"; // TextField
         public const string PartField = "session-part";               // DropdownField ("1", "2")
         public const string SessionButton = "session-toggle";         // Button ("Start logging" / "Stop logging")
         public const string SessionTime = "session-time";             // Label ("00:00")
         public const string LogFolderField = "session-folder";        // TextField
         public const string LogFolderApply = "session-folder-apply";  // Button ("Set")
         public const string SessionStatus = "session-status";         // Label (file name or error)
-
-        // Prepared views (built from the converter's {participant}_part{part}_{kind}.cdataset files)
-        public const string PreparedView1 = "view-1";              // Button (text = PreparedViews.All[0].Title)
-        public const string PreparedView2 = "view-2";              // Button (text = PreparedViews.All[1].Title)
-        public const string PreparedView3 = "view-3";              // Button (text = PreparedViews.All[2].Title)
-        public const string ViewsStatus = "views-status";          // Label (missing file / applied / rescan hint)
-        public const string LayeredViews = "views-layered";        // VisualElement built in code under view-1..3 (one Button per PreparedViews.Layered)
 
         // Dataset
         public const string DatasetDropdown = "dataset-list";      // DropdownField

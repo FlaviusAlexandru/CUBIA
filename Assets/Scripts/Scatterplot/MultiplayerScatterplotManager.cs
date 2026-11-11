@@ -266,7 +266,17 @@ namespace DataViz
         {
             try
             {
-                LoadStartupDataset();
+                // A client that joined through an NGO scene load spawns NetworkScatterplotState before
+                // this Start and has already shown the host's published stack (its DatasetStatus
+                // leaves Unknown only then). Loading the start-up dataset now would overwrite the
+                // active layer, or be refused on a computed one. Offline and on the host
+                // (IsLocalHostOrOffline), and on a client nothing was published to yet, load as before.
+                bool hostStackShown = !NetworkScatterplotState.IsLocalHostOrOffline &&
+                                      SharedPlotAuthority.DatasetStatus != DatasetMatch.Unknown;
+                if (hostStackShown)
+                    Debug.Log("[MultiplayerScatterplotManager] Start: showing the host's plot; start-up dataset not loaded.");
+                else
+                    LoadStartupDataset();
             }
             finally
             {

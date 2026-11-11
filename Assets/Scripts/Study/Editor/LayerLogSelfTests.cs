@@ -69,9 +69,10 @@ namespace DataViz.Study
             };
             t.Eq("row", "2026-11-10T09:00:00.005,1.00,P01,2,participant,SetLayerOpacity,\"moles, part 2\",1,0.5,,,", StudyLogWriter.FormatRow(row));
             t.True("plot-level", StudyActions.IsPlotLevel(StudyActions.Play) && StudyActions.IsPlotLevel(StudyActions.LoadDataset) &&
-                                  StudyActions.IsPlotLevel(StudyActions.Redo) && StudyActions.IsPlotLevel(StudyActions.SessionStop));
+                                  StudyActions.IsPlotLevel(StudyActions.Redo) && StudyActions.IsPlotLevel(StudyActions.SessionStop) &&
+                                  StudyActions.IsPlotLevel(StudyActions.Shuffle)); // Shuffle can change several layers
             t.True("layer-scoped", !StudyActions.IsPlotLevel(StudyActions.SetX) && !StudyActions.IsPlotLevel(StudyActions.AddLayer) &&
-                                    !StudyActions.IsPlotLevel(StudyActions.Shuffle) && !StudyActions.IsPlotLevel(null));
+                                    !StudyActions.IsPlotLevel(StudyActions.SetLayerShuffleUnlocked) && !StudyActions.IsPlotLevel(null));
         }
 
         // ---- DescribeStack -----------------------------------------------------------------------

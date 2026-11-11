@@ -7,10 +7,10 @@ using UnityEngine;
 
 namespace DataViz
 {
-    // Shuffle: field locks (per dataset, persisted), the shuffle blacklist, the per-dataset shuffle
-    // history and the shuffle itself, moved here unchanged from MultiplayerScatterplotManager.cs
-    // when the manager was split for layers. They act on the edit layer through the forwarders.
-    // Layer shuffle unlocks (LFR-32, B14) are declared at the bottom; WP9 owns this file.
+    // Shuffle: field locks (per dataset, persisted), the shuffle blacklist, the shuffle history and
+    // the shuffle itself. Locks and blacklist act on the edit layer through the forwarders. Shuffle
+    // and back/forward act on the first layer plus the layers unlocked for it (LFR-32, B14; the
+    // unlocks are at the bottom), each inside EditLayerScope, never on the active layer as such.
     public partial class MultiplayerScatterplotManager
     {
         //<summary>
@@ -299,27 +299,73 @@ namespace DataViz
                 Colour == other.Colour && Glyph == other.Glyph && Time == other.Time;
         }
 
+        // One layer's fields in a history entry. DatasetName is the layer's file at the time, so a
+        // layer that has since been loaded with another dataset is not given foreign column indices.
+        private struct LayerShuffleState
+        {
+            public string LayerId;
+            public string DatasetName;
+            public ShuffleState State;
+        }
+
+        // One press of Shuffle (or the settings it replaced): a state per layer it shuffled.
+        private sealed class ShuffleEntry
+        {
+            public readonly List<LayerShuffleState> Layers = new();
+
+            // True when before (what a new press replaced) is what this entry shows, on every layer
+            // this entry holds; before's other layers are then added here, so one << still restores
+            // them (a layer unlocked since this entry was recorded). False: before must be its own entry.
+            public bool Absorb(ShuffleEntry before)
+            {
+                foreach (LayerShuffleState mine in Layers)
+                {
+                    int i = before.Layers.FindIndex(b => b.LayerId == mine.LayerId);
+                    if (i < 0 || before.Layers[i].DatasetName != mine.DatasetName || !before.Layers[i].State.SameAs(mine.State))
+                        return false;
+                }
+
+                foreach (LayerShuffleState other in before.Layers)
+                {
+                    if (Layers.FindIndex(l => l.LayerId == other.LayerId) < 0)
+                        Layers.Add(other);
+                }
+
+                return true;
+            }
+        }
+
         /// <summary>
-        /// Per-dataset shuffle history + position, so navigating back/forward
-        /// through past shuffles works independently for each dataset and
-        /// survives switching between datasets within the same session.
-        /// In-memory only - intentionally not persisted to disk, per-session
-        /// is the current scope.
+        /// Shuffle history + position, so navigating back/forward through past shuffles works.
+        /// Keyed by the first point layer's dataset (B14): it survives switching between datasets
+        /// within the same session. An entry holds every layer that press shuffled. In-memory only -
+        /// intentionally not persisted to disk, per-session is the current scope.
         /// </summary>
         private class ShuffleHistory
         {
-            public List<ShuffleState> States = new();
+            public List<ShuffleEntry> States = new();
             public int CurrentIndex = -1; // -1 = no shuffle applied yet for this dataset
         }
 
         private readonly Dictionary<string, ShuffleHistory> m_ShuffleHistoryByDataset = new();
 
+        // The first point layer's dataset name; "" when no point layer names one.
+        private string ShuffleHistoryKey()
+        {
+            foreach (PlotLayer layer in Layers)
+            {
+                if (layer.IsPointLayer)
+                    return layer.DatasetName ?? "";
+            }
+
+            return "";
+        }
+
         private ShuffleHistory GetOrCreateShuffleHistory()
         {
-            if (LoadedDataset == null)
+            string key = ShuffleHistoryKey();
+            if (string.IsNullOrEmpty(key))
                 return null;
-
-            string key = LoadedDataset.Name;
 
             if (!m_ShuffleHistoryByDataset.TryGetValue(key, out ShuffleHistory history))
             {
@@ -330,9 +376,25 @@ namespace DataViz
             return history;
         }
 
-        private void ApplyShuffleState(ShuffleState state)
+        // Back/forward: puts every layer of the entry that still exists, is a point layer and still
+        // shows the same dataset back to its recorded fields, then raises OnPlotSettingsChanged once.
+        private void ApplyShuffleEntry(ShuffleEntry entry)
         {
-            ApplyShuffleFields(state);
+            int applied = 0;
+            foreach (LayerShuffleState layerState in entry.Layers)
+            {
+                PlotLayer layer = Stack.Find(layerState.LayerId);
+                if (layer == null || !layer.IsPointLayer || layer.DatasetName != layerState.DatasetName)
+                    continue;
+
+                using (EditLayerScope(layerState.LayerId))
+                    ApplyShuffleFields(layerState.State);
+                applied++;
+            }
+
+            if (applied == 0)
+                Debug.Log("[MultiplayerScatterplotManager] Shuffle history: none of that entry's layers is still there.");
+
             OnPlotSettingsChanged?.Invoke();
         }
 
@@ -435,11 +497,16 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Shuffle: gives every UNLOCKED field (see IsFieldLocked) a new random label, walking the
+        /// Shuffle (LFR-32) acts on the first layer, plus every layer the local player unlocked for
+        /// it (IsLayerShuffleUnlocked); computed layers never (ShuffleLocks.LayersToShuffle). It does
+        /// not follow the active layer. Each layer is shuffled on its own, inside EditLayerScope, with
+        /// the field locks and blacklist of that layer's dataset:
+        /// gives every UNLOCKED field (see IsFieldLocked) a new random label, walking the
         /// fields in the fixed order ShuffleLocks.ShuffleOrder (X, Y, Z, Size, Colour, Glyph, Time).
         /// Locked fields keep their label. Rules:
         ///   - a field only draws labels it accepts (ColumnMappingRules.Accepts): X/Y/Z/Size/Time
         ///     numeric or DateTime, Colour any label, Glyph categorical. Size only while Mapped.
+        ///   - X, Y and Z also only draw labels LFR-12 allows next to the other aligned layers.
         ///   - X, Y, Z and Size never share a label (locked ones are reserved first). Colour and
         ///     Glyph may repeat an axis label.
         ///   - this dataset's blacklisted labels are skipped for every field.
@@ -447,18 +514,137 @@ namespace DataViz
         /// X/Y/Z/Size picks stay weighted by value range (MaxValue - MinValue): in high-dimensional
         /// data that mixes a few meaningful columns with many near-constant ones, a wider range
         /// tends to mean "carries real structure". Colour, Glyph and Time pick uniformly.
-        /// Each press is recorded in this dataset's shuffle history (all seven fields), preceded by
-        /// the settings it replaced when those were not already the current entry, so << always
-        /// returns to what was shown before the press.
+        /// Each press is recorded in the shuffle history (all seven fields of every layer it
+        /// shuffled), preceded by the settings it replaced when those were not already the current
+        /// entry, so << always returns to what was shown before the press.
+        /// A client sends the layer ids, each with its own lock mask, and the union of those layers'
+        /// blacklists; the host shuffles exactly those layers (RequestShuffleColumnsForClient).
         /// </summary>
         public void RequestShuffleColumnsRpc()
         {
-            if (NetworkScatterplotState.TryForwardToHost(PlotRequest.ForShuffle(LockedFieldMask(), GetBlacklistForCurrentDataset()))) return;
-            if (RefuseLayerEdit()) return;
-
-            if (LoadedDataset == null || LoadedDataset.ColumnCount == 0)
+            if (Stack.Count == 0)
+            {
+                Debug.Log("[MultiplayerScatterplotManager] Shuffle: the plot is empty.");
                 return;
+            }
 
+            List<string> layerIds = ShuffleLocks.LayersToShuffle(Layers, IsLayerShuffleUnlocked);
+            if (layerIds.Count == 0)
+            {
+                PostPlotMessage("Shuffle: the first layer is computed; unlock another layer to shuffle it", PlotMessageKind.Refused);
+                OnPlotSettingsChanged?.Invoke();
+                return;
+            }
+
+            if (NetworkScatterplotState.TryForwardToHost(ShuffleRequestFor(layerIds))) return;
+
+            ShuffleLayers(layerIds, null, null);
+        }
+
+        // The request a client sends: per layer its own lock mask (locks are per dataset), Int = the
+        // first layer's mask, and the union of the layers' blacklists.
+        private PlotRequest ShuffleRequestFor(List<string> layerIds)
+        {
+            List<int> masks = new List<int>(layerIds.Count);
+            HashSet<string> blacklist = new HashSet<string>();
+            foreach (string id in layerIds)
+            {
+                using (EditLayerScope(id))
+                {
+                    masks.Add(LockedFieldMask());
+                    blacklist.UnionWith(GetBlacklistForCurrentDataset());
+                }
+            }
+
+            return PlotRequest.ForShuffle(masks[0], blacklist, ShuffleLocks.FormatLayerEntries(layerIds, masks));
+        }
+
+        // Shuffles each listed layer that exists, is a point layer and has a dataset, then records
+        // one history entry and raises OnPlotSettingsChanged once. lockMasks (host, for a client):
+        // per-layer lock masks; defaultMask: the mask for layers not in lockMasks; both null = the
+        // local locks. The blacklist override, when set, applies to every layer.
+        private void ShuffleLayers(IReadOnlyList<string> layerIds, IReadOnlyDictionary<string, int> lockMasks, int? defaultMask)
+        {
+            ShuffleEntry beforeEntry = new ShuffleEntry();
+            ShuffleEntry nextEntry = new ShuffleEntry();
+            List<string> logLines = new List<string>();
+            int? outerMask = m_ShuffleLockMaskOverride;
+
+            try
+            {
+                foreach (string id in layerIds)
+                {
+                    PlotLayer layer = Stack.Find(id);
+                    if (layer == null || !layer.IsPointLayer || layer.Dataset == null || layer.Dataset.ColumnCount == 0)
+                        continue;
+
+                    m_ShuffleLockMaskOverride = lockMasks != null && lockMasks.TryGetValue(id, out int mask) ? mask : defaultMask;
+
+                    using (EditLayerScope(id))
+                    {
+                        ShuffleState before = CaptureShuffleState();
+                        ShuffleState next = PickShuffle(before);
+
+                        beforeEntry.Layers.Add(new LayerShuffleState { LayerId = id, DatasetName = layer.DatasetName, State = before });
+                        nextEntry.Layers.Add(new LayerShuffleState { LayerId = id, DatasetName = layer.DatasetName, State = next });
+
+                        if (next.SameAs(before))
+                            continue;
+
+                        ApplyShuffleFields(next);
+                        logLines.Add(
+                            $"{layer.Name} [{id}]: " +
+                            $"X={ColumnNameOrNone(XColumnIndex)}, " +
+                            $"Y={ColumnNameOrNone(YColumnIndex)}, " +
+                            $"Z={ColumnNameOrNone(ZColumnIndex)}, " +
+                            $"Size={ColumnNameOrNone(SizeColumnIndex)}, " +
+                            $"Color={ColumnNameOrNone(ColorColumnIndex)}, " +
+                            $"Glyph={ColumnNameOrNone(GlyphColumnIndex)}, " +
+                            $"Time={ColumnNameOrNone(TimeColumnIndex)}");
+                    }
+                }
+            }
+            finally
+            {
+                m_ShuffleLockMaskOverride = outerMask;
+            }
+
+            if (logLines.Count == 0)
+            {
+                // Everything locked (or nothing valid to pick): nothing changes, nothing recorded.
+                Debug.Log("[MultiplayerScatterplotManager] Shuffle: no unlocked field could change.");
+                return;
+            }
+
+            // Save into the shuffle history. If the user had navigated back and is now shuffling
+            // again, this is a new branch - discard the old "forward" states, same as browser
+            // back/forward or standard undo/redo semantics. The settings this press replaced are
+            // recorded first unless they already are the current entry (e.g. the first shuffle, or
+            // after the user changed a mapping by hand or unlocked another layer).
+            ShuffleHistory history = GetOrCreateShuffleHistory();
+            if (history != null)
+            {
+                if (history.CurrentIndex < history.States.Count - 1)
+                {
+                    history.States.RemoveRange(history.CurrentIndex + 1, history.States.Count - history.CurrentIndex - 1);
+                }
+
+                if (history.CurrentIndex < 0 || !history.States[history.CurrentIndex].Absorb(beforeEntry))
+                    history.States.Add(beforeEntry);
+
+                history.States.Add(nextEntry);
+                history.CurrentIndex = history.States.Count - 1;
+            }
+
+            Debug.Log("[MultiplayerScatterplotManager] Shuffled -> " + string.Join("; ", logLines));
+
+            OnPlotSettingsChanged?.Invoke();
+        }
+
+        // The shuffle of the edit layer's fields (call inside EditLayerScope): returns the new
+        // state without applying it. See RequestShuffleColumnsRpc for the rules.
+        private ShuffleState PickShuffle(ShuffleState before)
+        {
             int columnCount = LoadedDataset.ColumnCount;
 
             // Only this dataset's own blacklist entries apply.
@@ -469,7 +655,6 @@ namespace DataViz
                     blacklisted.Add(blacklistedIdx);
             }
 
-            ShuffleState before = CaptureShuffleState();
             ShuffleState next = before;
 
             // X, Y, Z and Size share one pool of labels: a label one of them holds is off-limits to
@@ -503,6 +688,7 @@ namespace DataViz
                     continue;
 
                 bool axisLike = ShuffleLocks.IsAxisLike(target);
+                int axis = AxisOf(target);
                 int current = GetShuffleField(before, target);
 
                 candidates.Clear();
@@ -514,6 +700,10 @@ namespace DataViz
                     if (axisLike && axisLabelsInUse.Contains(i))
                         continue;
                     if (!ColumnMappingRules.Accepts(target, LoadedDataset.GetColumn(i), this))
+                        continue;
+                    // LFR-12: an axis label must agree in type with the other aligned layers. Always
+                    // true with one layer, so a single-layer plot shuffles exactly as before layers.
+                    if (axis >= 0 && !LayerRules.CanMapAxis(Stack, EditLayer, axis, i, out _))
                         continue;
 
                     candidates.Add(i);
@@ -536,61 +726,24 @@ namespace DataViz
                 SetShuffleField(ref next, target, picked);
             }
 
-            if (next.SameAs(before))
-            {
-                // Everything locked (or nothing valid to pick): nothing changes, nothing recorded.
-                Debug.Log("[MultiplayerScatterplotManager] Shuffle: no unlocked field could change.");
-                return;
-            }
-
-            ApplyShuffleFields(next);
-
-            // Save into this dataset's shuffle history. If the user had navigated back and is now
-            // shuffling again, this is a new branch - discard the old "forward" states, same as
-            // browser back/forward or standard undo/redo semantics. The settings this press
-            // replaced are recorded first unless they already are the current entry (e.g. the
-            // first shuffle, or after the user changed a mapping by hand).
-            ShuffleHistory history = GetOrCreateShuffleHistory();
-            if (history != null)
-            {
-                if (history.CurrentIndex < history.States.Count - 1)
-                {
-                    history.States.RemoveRange(history.CurrentIndex + 1, history.States.Count - history.CurrentIndex - 1);
-                }
-
-                if (history.CurrentIndex < 0 || !history.States[history.CurrentIndex].SameAs(before))
-                    history.States.Add(before);
-
-                history.States.Add(next);
-                history.CurrentIndex = history.States.Count - 1;
-            }
-
-            Debug.Log(
-                $"[MultiplayerScatterplotManager] Shuffled -> " +
-                $"X={ColumnNameOrNone(XColumnIndex)}, " +
-                $"Y={ColumnNameOrNone(YColumnIndex)}, " +
-                $"Z={ColumnNameOrNone(ZColumnIndex)}, " +
-                $"Size={ColumnNameOrNone(SizeColumnIndex)}, " +
-                $"Color={ColumnNameOrNone(ColorColumnIndex)}, " +
-                $"Glyph={ColumnNameOrNone(GlyphColumnIndex)}, " +
-                $"Time={ColumnNameOrNone(TimeColumnIndex)}"
-            );
-
-            OnPlotSettingsChanged?.Invoke();
+            return next;
         }
+
+        private static int AxisOf(MappingTarget target) =>
+            target == MappingTarget.X ? 0 : target == MappingTarget.Y ? 1 : target == MappingTarget.Z ? 2 : -1;
 
         private string ColumnNameOrNone(int columnIndex) =>
             columnIndex >= 0 && LoadedDataset != null ? LoadedDataset.GetColumn(columnIndex)?.Name ?? "None" : "None";
 
         /// <summary>
-        /// Steps back to the previous shuffle result for the current dataset,
-        /// if one exists. Does nothing (no-op, logged) if already at the
-        /// oldest saved shuffle or if this dataset has never been shuffled.
+        /// Steps back to the previous shuffle result (every layer that press shuffled and that still
+        /// exists), if one exists. Does nothing (no-op, logged) if already at the oldest saved
+        /// shuffle or if nothing has been shuffled for the first layer's dataset. Plot-level: it
+        /// does not depend on the active layer.
         /// </summary>
         public void RequestShuffleBackwardRpc()
         {
-            if (ForwardToHost(PlotOp.ShuffleBackward)) return;
-            if (RefuseLayerEdit()) return;
+            if (ForwardPlotOp(PlotOp.ShuffleBackward)) return;
 
             ShuffleHistory history = GetOrCreateShuffleHistory();
 
@@ -601,18 +754,16 @@ namespace DataViz
             }
 
             history.CurrentIndex--;
-            ApplyShuffleState(history.States[history.CurrentIndex]);
+            ApplyShuffleEntry(history.States[history.CurrentIndex]);
         }
 
         /// <summary>
-        /// Steps forward to a more recent shuffle result for the current
-        /// dataset, if the user had previously navigated backward. Does
-        /// nothing if already at the newest saved shuffle.
+        /// Steps forward to a more recent shuffle result, if the user had previously navigated
+        /// backward. Does nothing if already at the newest saved shuffle.
         /// </summary>
         public void RequestShuffleForwardRpc()
         {
-            if (ForwardToHost(PlotOp.ShuffleForward)) return;
-            if (RefuseLayerEdit()) return;
+            if (ForwardPlotOp(PlotOp.ShuffleForward)) return;
 
             ShuffleHistory history = GetOrCreateShuffleHistory();
 
@@ -623,7 +774,7 @@ namespace DataViz
             }
 
             history.CurrentIndex++;
-            ApplyShuffleState(history.States[history.CurrentIndex]);
+            ApplyShuffleEntry(history.States[history.CurrentIndex]);
         }
 
         /// <summary>
@@ -668,22 +819,50 @@ namespace DataViz
         }
 
         // Set only while the host runs a shuffle a client asked for: that client's shuffle locks
-        // (one bit per MappingTarget) and blacklist replace the host's own.
+        // (one bit per MappingTarget, for the layer being shuffled) and blacklist replace the host's own.
         private int? m_ShuffleLockMaskOverride;
         private IReadOnlyCollection<string> m_ShuffleBlacklistOverride;
 
-        /// <summary>Host side: RequestShuffleColumnsRpc with a client's shuffle locks and blacklist.</summary>
-        public void RequestShuffleColumnsForClient(int lockedFieldMask, IReadOnlyCollection<string> blacklist)
+        /// <summary>
+        /// Host side of a client's Shuffle with no layer list: the host chooses the layers (its own
+        /// first layer and unlocks) and uses the client's locks and blacklist for each.
+        /// </summary>
+        public void RequestShuffleColumnsForClient(int lockedFieldMask, IReadOnlyCollection<string> blacklist) =>
+            RequestShuffleColumnsForClient(lockedFieldMask, blacklist, null);
+
+        /// <summary>
+        /// Host side of a client's Shuffle: layerEntries is PlotRequest.LayerIds, "id" or "id:mask"
+        /// per layer the client chose (its own unlocks); a mask is that layer's field locks on the
+        /// client, lockedFieldMask the fallback. Unknown and computed ids are skipped. Null or empty
+        /// layerEntries: the host chooses, as in the two-argument overload.
+        /// </summary>
+        public void RequestShuffleColumnsForClient(int lockedFieldMask, IReadOnlyCollection<string> blacklist, IReadOnlyList<string> layerEntries)
         {
-            m_ShuffleLockMaskOverride = lockedFieldMask;
+            List<string> layerIds = new List<string>();
+            Dictionary<string, int> masks = new Dictionary<string, int>();
+            if (layerEntries != null && layerEntries.Count > 0)
+            {
+                foreach (string entry in layerEntries)
+                {
+                    if (ShuffleLocks.ParseLayerEntry(entry, lockedFieldMask, out string id, out int mask) && !masks.ContainsKey(id))
+                    {
+                        layerIds.Add(id);
+                        masks[id] = mask;
+                    }
+                }
+            }
+            else
+            {
+                layerIds = ShuffleLocks.LayersToShuffle(Layers, IsLayerShuffleUnlocked);
+            }
+
             m_ShuffleBlacklistOverride = blacklist;
             try
             {
-                RequestShuffleColumnsRpc();
+                ShuffleLayers(layerIds, masks, lockedFieldMask);
             }
             finally
             {
-                m_ShuffleLockMaskOverride = null;
                 m_ShuffleBlacklistOverride = null;
             }
         }

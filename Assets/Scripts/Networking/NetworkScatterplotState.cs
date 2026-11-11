@@ -322,7 +322,7 @@ namespace DataViz.Networking
                 case PlotOp.TimeScrub: m.RequestTimeScrubRpc(r.Float); return true;
                 case PlotOp.Playback: m.RequestPlaybackToggleRpc(r.Bool); return true;
                 case PlotOp.PlaybackRate: m.RequestPlaybackRateRpc(r.Float); return true;
-                case PlotOp.Shuffle: m.RequestShuffleColumnsForClient(r.Int, r.Blacklist); return true;
+                case PlotOp.Shuffle: m.RequestShuffleColumnsForClient(r.Int, r.Blacklist, r.LayerIds); return true;
                 case PlotOp.ShuffleBackward: m.RequestShuffleBackwardRpc(); return true;
                 case PlotOp.ShuffleForward: m.RequestShuffleForwardRpc(); return true;
 

@@ -53,6 +53,7 @@ namespace DataViz.Study
         bool m_HasOverlap;
 
         DatasetColumnar m_Dataset;
+        string m_LayerId; // two layers on one dataset and column must not share a draft
         int m_Column = int.MinValue;
         bool m_Rangeable;
         float m_Min, m_Max;
@@ -126,7 +127,7 @@ namespace DataViz.Study
             if (m == null) return;
             int column = TargetColumn(m);
             List<MultiplayerScatterplotManager.GlyphRange> committed = Committed(m);
-            bool context = m.LoadedDataset != m_Dataset || column != m_Column;
+            bool context = m.LoadedDataset != m_Dataset || column != m_Column || EditLayerId(m) != m_LayerId;
             bool changed = !Same(committed, m_Committed);
 
             if (context || (changed && !m_Dirty)) Reset(m);
@@ -144,6 +145,7 @@ namespace DataViz.Study
             m_Rows.Clear();
 
             m_Dataset = m != null ? m.LoadedDataset : null;
+            m_LayerId = m != null ? EditLayerId(m) : null;
             m_Column = m != null ? TargetColumn(m) : -1;
             DatasetColumn column = m_Dataset != null && m_Column >= 0 && m_Column < m_Dataset.ColumnCount
                 ? m_Dataset.Columns[m_Column]
@@ -167,6 +169,8 @@ namespace DataViz.Study
             m_Dirty = false;
             Refresh();
         }
+
+        static string EditLayerId(MultiplayerScatterplotManager m) => m.HasEditLayer ? m.EditLayer.Id : "";
 
         int TargetColumn(MultiplayerScatterplotManager m) => IsFilter ? m.FilterColumnIndex : m.GlyphColumnIndex;
 

@@ -84,6 +84,10 @@ namespace DataViz
         // Glyph column the draft belongs to.
         private DatasetColumnar m_Dataset;
         private int m_Column = int.MinValue;
+        // Edit layer the draft belongs to: two layers on the same dataset and column are different
+        // contexts, so a dirty draft is never confirmed onto the layer that just became active.
+        private string m_LayerId;
+        private bool m_LayerEditable = true;
         private bool m_ColumnIsRangeable;
         private float m_Min;
         private float m_Max;
@@ -192,7 +196,7 @@ namespace DataViz
             if (m_Manager == null)
                 return;
 
-            bool contextChanged = m_Manager.LoadedDataset != m_Dataset || TargetColumn != m_Column;
+            bool contextChanged = m_Manager.LoadedDataset != m_Dataset || TargetColumn != m_Column || EditLayerId() != m_LayerId;
             bool committedChanged = !SameRanges(CommittedRanges(), m_CommittedSnapshot);
 
             if (contextChanged || (committedChanged && !m_DraftDirty))
@@ -200,6 +204,8 @@ namespace DataViz
             else if (committedChanged)
                 m_CommittedSnapshot = CopyRanges(CommittedRanges()); // keep the user's draft
         }
+
+        private string EditLayerId() => m_Manager != null && m_Manager.HasEditLayer ? m_Manager.EditLayer.Id : "";
 
         /// <summary>Throws away the draft and shows the manager's committed ranges again.</summary>
         private void ResetDraftFromCommitted()
@@ -213,6 +219,9 @@ namespace DataViz
 
             m_Dataset = m_Manager != null ? m_Manager.LoadedDataset : null;
             m_Column = TargetColumn;
+            m_LayerId = EditLayerId();
+            // A computed layer's ranges come from its source; the manager refuses changes to them.
+            m_LayerEditable = m_Manager != null && m_Manager.HasEditLayer && m_Manager.EditLayer.Kind != LayerKind.Computed;
 
             DatasetColumn column = (m_Dataset != null && m_Column >= 0 && m_Column < m_Dataset.ColumnCount)
                 ? m_Dataset.Columns[m_Column]
@@ -573,8 +582,8 @@ namespace DataViz
             }
 
             SetButtonEnabled(m_AddGlyphButton,
-                showRanges && m_Draft.Count < MaxRanges && (IsFilter || FirstUnusedGlyph(null) >= 0));
-            SetButtonEnabled(m_ConfirmButton, showRanges && m_DraftDirty && !DraftHasOverlap);
+                showRanges && m_LayerEditable && m_Draft.Count < MaxRanges && (IsFilter || FirstUnusedGlyph(null) >= 0));
+            SetButtonEnabled(m_ConfirmButton, showRanges && m_LayerEditable && m_DraftDirty && !DraftHasOverlap);
             SetButtonEnabled(m_CancelButton, showRanges && m_DraftDirty);
         }
 

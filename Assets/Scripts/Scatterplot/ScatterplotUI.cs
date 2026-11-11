@@ -399,7 +399,32 @@ namespace DataViz
             // since this whole block runs inside the m_IsUpdatingUI guard.
             RefreshBlacklistToggleSelection();
 
+            ApplyMappingEditable();
+
             m_IsUpdatingUI = false;
+        }
+
+        /// <summary>
+        /// Layers: these controls edit the active layer. A computed active layer takes its mapping
+        /// from its source and an empty plot has no layer, so the manager would refuse or drop every
+        /// change; grey the controls out instead. One-layer plots are unaffected (always editable).
+        /// </summary>
+        private void ApplyMappingEditable()
+        {
+            bool editable = m_Manager.HasEditLayer && m_Manager.EditLayer.Kind != LayerKind.Computed;
+            if (m_XColumnDropdown != null) m_XColumnDropdown.interactable = editable;
+            if (m_YColumnDropdown != null) m_YColumnDropdown.interactable = editable;
+            if (m_ZColumnDropdown != null) m_ZColumnDropdown.interactable = editable;
+            if (m_ColorColumnDropdown != null) m_ColorColumnDropdown.interactable = editable;
+            if (m_PointSizeSlider != null) m_PointSizeSlider.interactable = editable;
+            if (m_SizeMappedToggle != null) m_SizeMappedToggle.interactable = editable;
+            if (m_TimeColumnDropdown != null) m_TimeColumnDropdown.interactable = editable;
+            if (m_FilterLabelDropdown != null) m_FilterLabelDropdown.interactable = editable;
+            if (m_GlyphColumnDropdown != null) m_GlyphColumnDropdown.interactable = editable;
+            if (m_GlyphShapeDropdown != null) m_GlyphShapeDropdown.interactable = editable;
+            // These two are also switched by their Populate methods; only ever turn them off here.
+            if (!editable && m_FilterIndexDropdown != null) m_FilterIndexDropdown.interactable = false;
+            if (!editable && m_GlyphLabelDropdown != null) m_GlyphLabelDropdown.interactable = false;
         }
 
         #region UI Change Event Handlers

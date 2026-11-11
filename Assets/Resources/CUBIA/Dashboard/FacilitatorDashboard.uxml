@@ -14,11 +14,7 @@
             <!-- Session -->
             <VisualElement class="dash-section">
                 <Label text="Session" class="dash-section__header" />
-                <!-- Participants come from the WAM Meta logs (WamIaAutoImporter); filled by DashboardController. -->
-                <VisualElement class="dash-row">
-                    <DropdownField name="session-participant" label="Participant" class="dash-grow" />
-                    <Button name="session-import" text="Import new logs" class="dash-button" />
-                </VisualElement>
+                <TextField name="session-participant" label="Participant" />
                 <DropdownField name="session-part" label="Part" choices="1,2" index="0" />
                 <VisualElement class="dash-row">
                     <Button name="session-toggle" text="Start logging" class="dash-button dash-button--primary" />
@@ -29,17 +25,6 @@
                     <Button name="session-folder-apply" text="Set" class="dash-button" />
                 </VisualElement>
                 <Label name="session-status" text="Not logging" class="dash-note" />
-            </VisualElement>
-
-            <!-- Prepared views (button text is set from PreparedViews.All) -->
-            <VisualElement class="dash-section">
-                <Label text="Prepared views" class="dash-section__header" />
-                <VisualElement class="dash-row dash-views">
-                    <Button name="view-1" text="Controller path" class="dash-button dash-view-button" />
-                    <Button name="view-2" text="Targets and cursor" class="dash-button dash-view-button" />
-                    <Button name="view-3" text="Accuracy per target" class="dash-button dash-view-button" />
-                </VisualElement>
-                <Label name="views-status" text="Uses the participant and part above." class="dash-note" />
             </VisualElement>
 
             <!-- Dataset -->

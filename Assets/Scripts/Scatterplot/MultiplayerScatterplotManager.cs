@@ -310,8 +310,7 @@ namespace DataViz
             List<string> columnarFiles = DatasetStore.Files();
             if (columnarFiles.Count > 0)
             {
-                CurrentDatasetName = columnarFiles[0];
-                LoadLocalDataset(CurrentDatasetName);
+                LoadLocalDataset(columnarFiles[0]); // sets the layer's dataset (and its seed name) on success
                 return;
             }
 
@@ -325,8 +324,7 @@ namespace DataViz
                 if (csvFiles.Length > 0)
                 {
                     string csvFileName = Path.GetFileName(csvFiles[0]);
-                    CurrentDatasetName = csvFileName.Replace(".csv", ".cdataset");
-                    LoadLocalDataset(CurrentDatasetName);
+                    LoadLocalDataset(csvFileName.Replace(".csv", ".cdataset"));
                     return;
                 }
             }
@@ -336,8 +334,7 @@ namespace DataViz
 
             if (streamingCsvFiles.Length > 0)
             {
-                CurrentDatasetName = Path.GetFileName(streamingCsvFiles[0]).Replace(".csv", ".cdataset");
-                LoadLocalDataset(CurrentDatasetName);
+                LoadLocalDataset(Path.GetFileName(streamingCsvFiles[0]).Replace(".csv", ".cdataset"));
             }
             else
             {

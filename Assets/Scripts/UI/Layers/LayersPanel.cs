@@ -194,15 +194,15 @@ namespace DataViz.MenuUI
             // ---- point layers
             m_PointOnly = PanelKit.Rect(props, "PointLayer", 0f, 0f, k_RightWidth, PanelHeight - k_Top);
             RectTransform pt = m_PointOnly;
-            m_Normalise = PanelKit.Button(pt, "Normalise", "", null, 0f, RowY(1), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_Normalise = PanelKit.Button(pt, "Normalise", "…", null, 0f, RowY(1), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_Normalise.onClick.AddListener(() => RequestToggle((m, l) => m.RequestSetLayerNormalisedRpc(l.Id, !l.Normalised)));
-            m_HideInSource = PanelKit.Button(pt, "HideInSource", "", null, k_Half + 10f, RowY(1), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_HideInSource = PanelKit.Button(pt, "HideInSource", "…", null, k_Half + 10f, RowY(1), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_HideInSource.onClick.AddListener(() => RequestToggle((m, l) => m.RequestSetSubsetHiddenInSourceRpc(l.Id, !l.HiddenInSource)));
 
-            m_Glyph = PanelKit.Button(pt, "Glyph", "", null, 0f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_Glyph = PanelKit.Button(pt, "Glyph", "…", null, 0f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_Glyph.onClick.AddListener(() => RequestToggle((m, l) =>
                 m.RequestSetLayerGlyphRpc(l.Id, (Mathf.Max(0, l.DefaultGlyph) + 1) % ScatterplotUI.k_GlyphShapeNames.Length)));
-            m_Shuffle = PanelKit.Button(pt, "Shuffle", "", null, k_Half + 10f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_Shuffle = PanelKit.Button(pt, "Shuffle", "…", null, k_Half + 10f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_Shuffle.gameObject.AddComponent<PresenterModeExempt>(); // a local preference, like the field locks
             m_Shuffle.onClick.AddListener(() => RequestToggle((m, l) => m.RequestSetLayerShuffleUnlockedRpc(l.Id, !m.IsLayerShuffleUnlocked(l.Id))));
 
@@ -214,9 +214,9 @@ namespace DataViz.MenuUI
                     110f + i * 150f, RowY(5), 144f, k_RowH, PanelKit.Style.Secondary, small);
                 m_TimeModes[i].onClick.AddListener(() => Request((m, id) => m.RequestSetLayerTimeBehaviourRpc(id, mode)));
             }
-            m_EndColumn = PanelKit.Button(pt, "EndColumn", "", null, 0f, RowY(6), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_EndColumn = PanelKit.Button(pt, "EndColumn", "…", null, 0f, RowY(6), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_EndColumn.onClick.AddListener(() => OpenPicker(Picker.EndColumn, m_Manager?.ActiveLayerId));
-            m_LabelColumn = PanelKit.Button(pt, "LabelColumn", "", null, k_Half + 10f, RowY(6), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_LabelColumn = PanelKit.Button(pt, "LabelColumn", "…", null, k_Half + 10f, RowY(6), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_LabelColumn.onClick.AddListener(() => OpenPicker(Picker.LabelColumn, m_Manager?.ActiveLayerId));
             m_TimeHint = PanelKit.Label(pt, "TimeHint", "", 0f, RowY(7), k_RightWidth, 34f, small, theme.TextMuted);
 
@@ -231,9 +231,9 @@ namespace DataViz.MenuUI
                     146f + i * 104f, RowY(1), 98f, k_RowH, PanelKit.Style.Secondary, small);
                 m_Axes[i].onClick.AddListener(() => Request((m, id) => m.RequestSetComputedAxisRpc(id, axis)));
             }
-            m_Flag = PanelKit.Button(cp, "Flag", "", null, 0f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_Flag = PanelKit.Button(cp, "Flag", "…", null, 0f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_Flag.onClick.AddListener(() => RequestToggle((m, l) => m.RequestSetComputedFlagRpc(l.Id, !l.Smoothed)));
-            m_OrderColumn = PanelKit.Button(cp, "OrderColumn", "", null, k_Half + 10f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
+            m_OrderColumn = PanelKit.Button(cp, "OrderColumn", "…", null, k_Half + 10f, RowY(4), k_Half, k_RowH, PanelKit.Style.Secondary, small);
             m_OrderColumn.onClick.AddListener(() => OpenPicker(Picker.OrderColumn, m_Manager?.ActiveLayerId));
 
             Stepper(cp, "Span", 0f, RowY(5), out m_SpanDown, out m_SpanText, out m_SpanUp, small, theme);

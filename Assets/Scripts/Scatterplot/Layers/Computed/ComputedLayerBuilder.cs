@@ -153,7 +153,8 @@ namespace DataViz
 
             rowLayer = computed;
             ds = computed.Dataset;
-            if (ds == null && !string.IsNullOrEmpty(computed.DatasetName))
+            // A client that lacks the file marks the layer unavailable; don't hit the disk every frame.
+            if (ds == null && !computed.LocalUnavailable && !string.IsNullOrEmpty(computed.DatasetName))
                 ds = DatasetRegistry.Get(computed.DatasetName);
             return true;
         }

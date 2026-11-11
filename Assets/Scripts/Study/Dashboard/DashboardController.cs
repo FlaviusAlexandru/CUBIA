@@ -662,7 +662,7 @@ namespace DataViz.Study
                 m_ToastedWarnings.TryGetValue(layer.Id, out string shown);
                 if (warning == (shown ?? "")) continue;
                 m_ToastedWarnings[layer.Id] = warning;
-                if (warning.Length > 0) ShowToast($"{layer.Name}: {warning}", ToastKind.Warning);
+                if (warning.Length > 0) ShowToast(warning, ToastKind.Warning); // warning lines already start with the layer name
             }
         }
 

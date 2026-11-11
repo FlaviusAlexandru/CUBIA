@@ -105,12 +105,14 @@ namespace DataViz.Study
         public const string SetSubsetHiddenInSource = "SetSubsetHiddenInSource";
         public const string SetComputedParam = "SetComputedParam"; // values "<Param>=<value>": Axis, Order, Smoothed, Value, Span
         public const string SetLayerLineWidth = "SetLayerLineWidth";
+        public const string SetLayerShuffleUnlocked = "SetLayerShuffleUnlocked"; // local to this device, not in the snapshot
         public const string Redo = "Redo";
 
         /// <summary>
         /// True for actions about the whole plot or the session, whose rows leave the Layer column
         /// empty: Play, Pause, Scrub, SetPlaybackRate, Tooltips, ResetPosition, LoadDataset (the
-        /// dashboard's "new plot"), ApplyView, Undo, Redo, Note, Marker, SessionStart, SessionStop.
+        /// dashboard's "new plot"), ApplyView, Undo, Redo, Note, Marker, SessionStart, SessionStop, and Shuffle (it changes the
+        /// first layer plus every layer unlocked for it, so no single layer names it).
         /// Every other action is layer-scoped.
         /// </summary>
         public static bool IsPlotLevel(string action)
@@ -119,7 +121,7 @@ namespace DataViz.Study
             {
                 case Play: case Pause: case Scrub: case SetPlaybackRate: case Tooltips: case ResetPosition:
                 case LoadDataset: case ApplyView: case Undo: case Redo: case Note: case Marker:
-                case SessionStart: case SessionStop:
+                case SessionStart: case SessionStop: case Shuffle:
                     return true;
                 default:
                     return false;

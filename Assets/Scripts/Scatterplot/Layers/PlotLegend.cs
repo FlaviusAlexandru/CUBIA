@@ -308,7 +308,7 @@ namespace DataViz
             textGo.transform.SetParent(m_Root.transform, false);
             m_Text = textGo.AddComponent<TextMeshPro>();
             m_Text.richText = true;
-            m_Text.fontSize = m_FontSize;
+            m_Text.fontSize = PlotText.Size(m_FontSize);
             m_Text.alignment = TextAlignmentOptions.TopLeft;
             m_Text.textWrappingMode = TextWrappingModes.NoWrap;
             m_Text.overflowMode = TextOverflowModes.Overflow;

@@ -68,9 +68,12 @@ namespace DataViz
         public TMP_Dropdown m_GlyphShapeDropdown;    // which glyph shape to assign to the selected label
 
         // Graph's glyph atlas - index here must match glyphIndex in ScatterplotVFXRenderer.
+        // Assets/Materials/glyph_atlas.png is 256x128: a 4x2 flipbook of 64 px cells (the
+        // PointParticles.vfx output's Flip Book Size), frame i in column i % 4, row i / 4 counted
+        // from the top. Frame 7 is blank; a new glyph goes there and the list grows with it.
         // Public + static so GPUPointInteractable's tooltip can show the same names
         // instead of a raw shape number - both always read from this one list.
-        public static readonly string[] k_GlyphShapeNames = { "Circle", "Square", "Triangle", "Diamond", "Cross", "Star" };
+        public static readonly string[] k_GlyphShapeNames = { "Circle", "Square", "Triangle", "Diamond", "Cross", "Star", "Mole" };
 
         // First option of the Filter Value dropdown: keep every row that has a value in the
         // filter column (sent to the manager as an empty FilterLabel).

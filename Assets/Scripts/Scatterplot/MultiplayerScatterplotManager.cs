@@ -207,7 +207,8 @@ namespace DataViz
         // [min, max] of a range draws with that range's glyph. Kept sorted by min and never
         // overlapping; two ranges may share one edge value, which then belongs to the lower range.
         // Each assignable shape (every k_GlyphShapeNames entry except the default Circle) is used
-        // by at most one range, so there are at most MaxGlyphRanges. A per-value GlyphAssignment
+        // by at most one range, and there are at most MaxGlyphRanges ranges (5; kept when Mole was
+        // added, so the range editors keep their row count). A per-value GlyphAssignment
         // overrides a range for that exact value; rows outside every range, or with no value,
         // keep the default glyph. Cleared when the glyph column changes or a dataset loads.
         // Set only through RequestSetGlyphRangesRpc, which validates the whole list.

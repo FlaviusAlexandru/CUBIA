@@ -117,6 +117,7 @@ namespace DataViz.MenuUI
                 row.MovedDown += id => Move(id, +1);
                 row.Duplicated += id => m_Manager?.RequestDuplicateLayerRpc(id);
                 row.Removed += id => m_Manager?.RequestRemoveLayerRpc(id);
+                row.SizeStepped += OnSizeStepped;
                 m_Rows.Add(row);
             }
 
@@ -507,6 +508,16 @@ namespace DataViz.MenuUI
             PlotLayer layer = m_Manager?.Stack.Find(id);
             if (layer != null)
                 m_Manager.RequestSetLayerVisibleRpc(id, !layer.Visible);
+        }
+
+        // PF-01: any layer's size from its row, without selecting it.
+        void OnSizeStepped(string id, int direction)
+        {
+            PlotLayer layer = m_Manager?.Stack.Find(id);
+            if (layer == null || !layer.IsPointLayer) return;
+            float size = LayersPanelModel.StepPointSize(layer.PointSize, direction);
+            if (size != layer.PointSize)
+                m_Manager.RequestSetLayerPointSizeRpc(id, size);
         }
 
         void Move(string id, int delta)

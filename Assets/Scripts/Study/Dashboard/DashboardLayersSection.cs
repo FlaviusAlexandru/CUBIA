@@ -11,7 +11,8 @@ namespace DataViz.Study
     /// The dashboard's Layers section (LFR-26): the same layer controls as the VR Layers tab, built
     /// in code (like DashboardRangeEditor) so FacilitatorDashboard.uxml stays unchanged.
     ///
-    /// Top: one row per layer (select, show/hide, up, down, duplicate, remove) with its warning line
+    /// Top: one row per layer (select, show/hide, up, down, point size − / + for point layers (PF-01:
+    /// resizes that layer without selecting it), duplicate, remove) with its warning line
     /// (point budget, skipped rows, computed status, "not on this device", "source missing").
     /// Then the add controls (dataset file, subset of the active layer, computed kind), then the
     /// active layer's own settings. Every change goes through the <see cref="Change"/> delegate,
@@ -260,6 +261,7 @@ namespace DataViz.Study
             {
                 h.Add(l.Id);
                 h.Add(l.ColorColumnIndex); // legacy colour requests do not raise OnLayersChanged
+                h.Add(l.PointSize);        // nor does the Map point size slider
                 h.Add(l.Dataset != null ? l.Dataset.GetHashCode() : 0);
                 h.Add(l.LocalUnavailable);
                 h.Add(m_Manager.IsLayerShuffleUnlocked(l.Id));
@@ -295,6 +297,19 @@ namespace DataViz.Study
                 Button down = ButtonOf("↓", () => Move(id, +1), "Move up the stack (drawn later)");
                 down.SetEnabled(i < layers.Count - 1);
                 row.Add(down);
+                if (layer.IsPointLayer)
+                {
+                    Button smaller = ButtonOf("−", () => StepSize(id, -1), "Smaller points for this layer (it stays unselected)");
+                    smaller.SetEnabled(DataViz.MenuUI.LayersPanelModel.StepPointSize(layer.PointSize, -1) < layer.PointSize);
+                    row.Add(smaller);
+                    var size = new Label(DataViz.MenuUI.LayersPanelModel.SizePercentText(layer.PointSize)) { tooltip = "Point size (Map's slider shows the active layer's)" };
+                    size.style.unityTextAlign = TextAnchor.MiddleCenter;
+                    size.style.minWidth = 40;
+                    row.Add(size);
+                    Button bigger = ButtonOf("+", () => StepSize(id, +1), "Bigger points for this layer (it stays unselected)");
+                    bigger.SetEnabled(DataViz.MenuUI.LayersPanelModel.StepPointSize(layer.PointSize, +1) > layer.PointSize);
+                    row.Add(bigger);
+                }
                 row.Add(ButtonOf("Copy", () => Duplicate(id), "Duplicate this layer"));
                 row.Add(ButtonOf("×", () => Remove(id), "Remove this layer"));
                 m_List.Add(row);
@@ -448,6 +463,20 @@ namespace DataViz.Study
             m_Change(StudyActions.ReorderLayer, m_Manager.Layers[from].Name, (from + 1).ToString(k_Inv), (to + 1).ToString(k_Inv),
                 () => m_Manager.RequestReorderLayerRpc(id, to), true);
         }
+
+        // PF-01: one log row and one undo step per click, named after the resized layer.
+        void StepSize(string id, int direction)
+        {
+            PlotLayer layer = m_Manager.Stack.Find(id);
+            if (layer == null || !layer.IsPointLayer) return;
+            float size = DataViz.MenuUI.LayersPanelModel.StepPointSize(layer.PointSize, direction);
+            if (size == layer.PointSize) return;
+            m_Change(StudyActions.SetPointSize, layer.Name, SizeText(layer.PointSize), SizeText(size),
+                () => m_Manager.RequestSetLayerPointSizeRpc(id, size), true);
+        }
+
+        /// <summary>Old/new text of a SetPointSize row, as PlotStateDiff writes it.</summary>
+        public static string SizeText(float size) => size.ToString("0.###", k_Inv);
 
         void Duplicate(string id)
         {

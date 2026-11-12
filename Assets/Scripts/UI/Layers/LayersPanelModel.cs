@@ -22,6 +22,13 @@ namespace DataViz.MenuUI
         public static readonly string[] TimeModeNames = { "Follow", "Always", "Span" };
         public static readonly string[] AxisChoiceNames = { "Auto", "X", "Y", "Z" };   // DriverAxis -1..2
 
+        /// <summary>
+        /// Point size steps of the per-layer size controls (PF-01), in percent of
+        /// MultiplayerScatterplotManager.MaxPointSize as the Map tab's slider shows it. Finer at
+        /// the small end, where the default size (20 %) sits.
+        /// </summary>
+        public static readonly float[] PointSizePercentSteps = { 1f, 2f, 3f, 5f, 7f, 10f, 13f, 16f, 20f, 25f, 30f, 40f, 50f, 65f, 80f, 100f };
+
         public const string TagNormalised = "Normalised";
         public const string TagHidden = "hidden";
         public const string TagSourceMissing = "source missing";
@@ -38,6 +45,9 @@ namespace DataViz.MenuUI
             public bool Active, Visible, Greyed;
             public string VisibleText = "";
             public bool CanMoveUp, CanMoveDown;
+            public bool ShowSize;           // point layers: the size stepper (PF-01)
+            public string SizeText = "";    // "20%"
+            public bool CanShrink, CanGrow;
         }
 
         /// <summary>The active layer's property block. Booleans named Show* pick which widgets exist; *Enabled whether they react.</summary>
@@ -163,7 +173,41 @@ namespace DataViz.MenuUI
             row.Tags = string.Join(" · ", tags);
             row.Greyed = layer.LocalUnavailable || !layer.Visible;
             row.Warning = OneLine(CleanWarning(warningOf?.Invoke(layer)));
+
+            row.ShowSize = layer.IsPointLayer;
+            if (row.ShowSize)
+            {
+                row.SizeText = SizePercentText(layer.PointSize);
+                row.CanShrink = StepPointSize(layer.PointSize, -1) < layer.PointSize;
+                row.CanGrow = StepPointSize(layer.PointSize, +1) > layer.PointSize;
+            }
             return row;
+        }
+
+        /// <summary>"20%": a point size as the Map tab's slider shows it (percent of MaxPointSize).</summary>
+        public static string SizePercentText(float pointSize) =>
+            Mathf.RoundToInt(pointSize / MultiplayerScatterplotManager.MaxPointSize * 100f).ToString(CultureInfo.InvariantCulture) + "%";
+
+        /// <summary>
+        /// The next point size up (direction &gt; 0) or down (&lt; 0) on PointSizePercentSteps from
+        /// any current size (the Map slider can leave it between steps); the same size at either end.
+        /// </summary>
+        public static float StepPointSize(float pointSize, int direction)
+        {
+            float max = MultiplayerScatterplotManager.MaxPointSize;
+            float percent = pointSize / max * 100f;
+            const float eps = 0.01f;
+            if (direction > 0)
+            {
+                foreach (float step in PointSizePercentSteps)
+                    if (step > percent + eps) return step / 100f * max;
+            }
+            else if (direction < 0)
+            {
+                for (int i = PointSizePercentSteps.Length - 1; i >= 0; i--)
+                    if (PointSizePercentSteps[i] < percent - eps) return PointSizePercentSteps[i] / 100f * max;
+            }
+            return pointSize;
         }
 
         static Props BuildProps(LayerStack stack, PlotLayer layer, Func<PlotLayer, string> warningOf,
@@ -457,6 +501,7 @@ namespace DataViz.MenuUI
                 h.Add(layer.Id);
                 h.Add(layer.ColorColumnIndex);
                 h.Add(layer.TimeColumnIndex);
+                h.Add(layer.PointSize);   // the Map slider changes it without OnLayersChanged
                 h.Add(layer.DatasetName);
                 h.Add(layer.LocalUnavailable);
                 h.Add(layer.Dataset != null ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layer.Dataset) : 0);

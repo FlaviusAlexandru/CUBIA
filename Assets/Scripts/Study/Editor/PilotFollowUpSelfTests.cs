@@ -13,6 +13,7 @@ namespace DataViz.Study
     /// change the active layer, logged with the resized layer's name and undoable on the dashboard.
     /// PF-02: plot text 1.5x, dark menus (MenuTheme.Dark / RemapToDark) and dark studio colours.
     /// PF-03: grid planes on the cube faces behind the data (GridFaces.FarSides).
+    /// PF-04: the Mole glyph in the 4x2 point atlas.
     /// </summary>
     public static class PilotFollowUpSelfTests
     {
@@ -256,6 +257,91 @@ namespace DataViz.Study
             t.Eq("halfway keeps the default", Sides(GridFaces.Default), Sides(GridFaces.FarSides(new Vector3(0.5f, 0.5f, 0.5f), 1f)));
             t.Eq("scaled cube", "0,0,1", Sides(GridFaces.FarSides(new Vector3(1.2f, 1.5f, 0.9f), 2f)));
             t.Eq("default: back wall, far side, floor", "1,0,1", Sides(GridFaces.Default));
+        }
+
+        // ------------------------------------------------------------------ PF-04
+
+        const string k_AtlasPath = "Assets/Materials/glyph_atlas.png";
+        const string k_PointGraphPath = "Assets/Visual Effects/Point Particle VFX Graph/PointParticles.vfx";
+        const int k_Cell = 64;
+
+        // SHA-256 of each 64x64 cell of the six glyphs in the old 192x128 (3x2) atlas, RGBA bytes,
+        // rows from the top of the image. The 4x2 atlas must hold the same bytes in frames 0..5.
+        static readonly string[] k_OldCellHashes =
+        {
+            "724c0c3d8c245f3d368516c53224bc92cda7353d129a2eca4a385ab25c6d4cfd", // Circle
+            "fbfeab091cb32cc0e3fc1cadd16d295bdcf2f53310bce8fbcbbc0fb95e76f60e", // Square
+            "3be263e567e5bfe53db2155cd9bac3ede759255af9c7024ed87e8e3a0045cfbe", // Triangle
+            "b3ff8ffea5eeeac5dfeae8349406c42f1dc14548a4f0918d24454d772ae12e0a", // Diamond
+            "24f35bbce6b3dc8a39d8c5f9b574036ae1f09b525c29e4623567ddbe3067b806", // Cross
+            "a373cbb90506e393e82951d449a6438c19022e84f510095a106cce8cc40c2715", // Star
+        };
+
+        /// <summary>Frame i of the 4-column atlas as RGBA bytes, rows from the top (the VFX
+        /// flipbook puts frame 0 at the top left).</summary>
+        static byte[] AtlasCell(Color32[] pixels, int width, int height, int frame)
+        {
+            int col = frame % 4, row = frame / 4;
+            var bytes = new byte[k_Cell * k_Cell * 4];
+            int k = 0;
+            for (int yTop = 0; yTop < k_Cell; yTop++)
+            {
+                int y = height - 1 - (row * k_Cell + yTop);   // Unity rows run bottom-up
+                for (int x = col * k_Cell; x < (col + 1) * k_Cell; x++)
+                {
+                    Color32 c = pixels[y * width + x];
+                    bytes[k++] = c.r; bytes[k++] = c.g; bytes[k++] = c.b; bytes[k++] = c.a;
+                }
+            }
+            return bytes;
+        }
+
+        static int Opaque(byte[] cell)
+        {
+            int n = 0;
+            for (int i = 3; i < cell.Length; i += 4) if (cell[i] > 0) n++;
+            return n;
+        }
+
+        [SelfTest("PF-04: mole glyph in the point atlas")]
+        static void MoleGlyph(SelfTestTally t)
+        {
+            string[] names = ScatterplotUI.k_GlyphShapeNames;
+            t.Eq("seven glyph names", 7, names.Length);
+            t.Eq("glyph 6", "Mole", names.Length > 6 ? names[6] : "");
+            t.Eq("glyph 5 unchanged", "Star", names.Length > 5 ? names[5] : "");
+
+            string graph = System.IO.File.ReadAllText(k_PointGraphPath);
+            t.True("point graph flipbook is 4x2", graph.Contains("m_SerializableObject: '{\"x\":4,\"y\":2}'") &&
+                                                 !graph.Contains("{\"x\":3,\"y\":2}"));
+
+            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            try
+            {
+                bool loaded = tex.LoadImage(System.IO.File.ReadAllBytes(k_AtlasPath));
+                t.True("atlas png loads", loaded);
+                t.Eq("atlas size", "256x128", tex.width + "x" + tex.height);
+                if (!loaded || tex.width != 4 * k_Cell || tex.height != 2 * k_Cell) return;
+                Color32[] pixels = tex.GetPixels32();
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    for (int i = 0; i < k_OldCellHashes.Length; i++)
+                    {
+                        byte[] hash = sha.ComputeHash(AtlasCell(pixels, tex.width, tex.height, i));
+                        string hex = System.BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+                        t.Eq("old glyph cell " + i + " (" + names[i] + ") byte-identical", k_OldCellHashes[i], hex);
+                    }
+                }
+                t.True("mole cell 6 drawn", Opaque(AtlasCell(pixels, tex.width, tex.height, 6)) > 500);
+                t.Eq("cell 7 empty", 0, Opaque(AtlasCell(pixels, tex.width, tex.height, 7)));
+            }
+            finally
+            {
+                Object.DestroyImmediate(tex);
+            }
+
+            var imported = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(k_AtlasPath);
+            t.Eq("imported atlas size", "256x128", imported != null ? imported.width + "x" + imported.height : "missing");
         }
     }
 }

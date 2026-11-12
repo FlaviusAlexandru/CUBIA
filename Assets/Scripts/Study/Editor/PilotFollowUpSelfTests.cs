@@ -12,6 +12,7 @@ namespace DataViz.Study
     /// Pilot 2 follow-ups on the general CUBIA branch. PF-01: a per-layer point size that does not
     /// change the active layer, logged with the resized layer's name and undoable on the dashboard.
     /// PF-02: plot text 1.5x, dark menus (MenuTheme.Dark / RemapToDark) and dark studio colours.
+    /// PF-03: grid planes on the cube faces behind the data (GridFaces.FarSides).
     /// </summary>
     public static class PilotFollowUpSelfTests
     {
@@ -239,6 +240,22 @@ namespace DataViz.Study
             t.True("grid lighter than floor", Luma(DarkStudio.FloorMinor) > Luma(DarkStudio.FloorBase) + 0.15f &&
                 Luma(DarkStudio.FloorMajor) > Luma(DarkStudio.FloorMinor));
             t.True("depth cues light", Luma(DarkStudio.Ring) > 0.8f && Luma(DarkStudio.Post) > 0.8f && Luma(DarkStudio.Footprint) > 0.75f);
+        }
+        // ------------------------------------------------------------------ PF-03
+
+        static string Sides(Vector3Int v) => $"{v.x},{v.y},{v.z}";
+
+        [SelfTest("PF-03: grid faces behind the data")]
+        static void GridFacesBehind(SelfTestTally t)
+        {
+            // SampleScene's start position in the axes space of the 1 m cube: in front of the z = 0
+            // face, centred in x, eye above the cube's middle.
+            t.Eq("start position", "1,0,1", Sides(GridFaces.FarSides(new Vector3(0.45f, 0.67f, -1.55f), 1f)));
+            t.Eq("standing taller", "1,0,1", Sides(GridFaces.FarSides(new Vector3(0.45f, 0.95f, -1.55f), 1f)));
+            t.Eq("from the far corner, below", "0,1,0", Sides(GridFaces.FarSides(new Vector3(1.6f, -0.3f, 2.4f), 1f)));
+            t.Eq("halfway keeps the default", Sides(GridFaces.Default), Sides(GridFaces.FarSides(new Vector3(0.5f, 0.5f, 0.5f), 1f)));
+            t.Eq("scaled cube", "0,0,1", Sides(GridFaces.FarSides(new Vector3(1.2f, 1.5f, 0.9f), 2f)));
+            t.Eq("default: back wall, far side, floor", "1,0,1", Sides(GridFaces.Default));
         }
     }
 }

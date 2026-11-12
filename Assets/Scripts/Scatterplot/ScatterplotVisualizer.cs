@@ -65,6 +65,26 @@ namespace DataViz
 
         public VisualizationGridSettings m_GridSettings;
 
+        // PF-03: which cube face each grid plane sits on (GridFaces.FarSides), fixed once the start
+        // viewpoint is known; GridFaces.Default until then (edit mode, no XR Origin).
+        private Vector3Int? m_GridSides;
+
+        /// <summary>The faces the grid planes are on: per axis 1 = at the axis length, 0 = at 0 (PF-03).</summary>
+        public Vector3Int GridSides
+        {
+            get
+            {
+                if (m_GridSides.HasValue)
+                    return m_GridSides.Value;
+                if (m_AxesContainer != null && GridFaces.TryStartViewpoint(out Vector3 viewer))
+                {
+                    m_GridSides = GridFaces.FarSides(m_AxesContainer.InverseTransformPoint(viewer), m_AxisLength);
+                    return m_GridSides.Value;
+                }
+                return GridFaces.Default;
+            }
+        }
+
         private void Start()
         {
             if (m_Manager == null)
@@ -402,6 +422,7 @@ namespace DataViz
             h.Add(m_AxisLabelFontSize);
             h.Add(m_AxisLabelOffset);
             h.Add(m_TickLabelOffset);
+            h.Add(GridSides);
             if (m_GridSettings != null)
             {
                 h.Add(m_GridSettings.ShowGridPlanes);
@@ -429,11 +450,13 @@ namespace DataViz
             CreateAxisLine(Vector3.zero, new Vector3(0, m_AxisLength, 0), Color.green, "Y-Axis");
             CreateAxisLine(Vector3.zero, new Vector3(0, 0, m_AxisLength), Color.blue, "Z-Axis");
 
+            // Grid planes on the cube faces behind the data as seen from the start position (PF-03).
             if (m_GridSettings != null && m_GridSettings.ShowGridPlanes)
             {
-                CreateGridPlaneXY();
-                CreateGridPlaneXZ();
-                CreateGridPlaneYZ();
+                Vector3Int sides = GridSides;
+                CreateGridPlaneXY(sides.z * m_AxisLength);
+                CreateGridPlaneXZ(sides.y * m_AxisLength);
+                CreateGridPlaneYZ(sides.x * m_AxisLength);
             }
             if (m_GridSettings != null && m_GridSettings.ShowTickMarks)
             {
@@ -478,7 +501,7 @@ namespace DataViz
             lineCount <= 1 ? 0f : (lineCount - 1) * 0.5f * PlotText.Size(m_AxisLabelFontSize) * 0.1f * 0.03f;
 
 
-        private void CreateGridPlaneXY()
+        private void CreateGridPlaneXY(float z)
         {
             float spacing =
                 m_GridSettings.MinorGridSpacing;
@@ -490,8 +513,8 @@ namespace DataViz
             {
                 bool isMajor = Mathf.Approximately(x % major, 0f);
                 CreateGridLine(
-                    new Vector3(x, 0, 0),
-                    new Vector3(x, m_AxisLength, 0),
+                    new Vector3(x, 0, z),
+                    new Vector3(x, m_AxisLength, z),
                     isMajor
                 );
             }
@@ -500,14 +523,14 @@ namespace DataViz
             {
                 bool isMajor = Mathf.Approximately(y % major, 0f);
                 CreateGridLine(
-                    new Vector3(0, y, 0),
-                    new Vector3(m_AxisLength, y, 0),
+                    new Vector3(0, y, z),
+                    new Vector3(m_AxisLength, y, z),
                     isMajor
                 );
             }
         }
 
-        private void CreateGridPlaneXZ()
+        private void CreateGridPlaneXZ(float y)
         {
             float spacing =
                 m_GridSettings.MinorGridSpacing;
@@ -518,8 +541,8 @@ namespace DataViz
             {
                 bool isMajor = Mathf.Approximately(x % major, 0f);
                 CreateGridLine(
-                    new Vector3(x, 0, 0),
-                    new Vector3(x, 0, m_AxisLength),
+                    new Vector3(x, y, 0),
+                    new Vector3(x, y, m_AxisLength),
                     isMajor
                 );
             }
@@ -528,14 +551,14 @@ namespace DataViz
             {
                 bool isMajor = Mathf.Approximately(z % major, 0f);
                 CreateGridLine(
-                    new Vector3(0, 0, z),
-                    new Vector3(m_AxisLength, 0, z),
+                    new Vector3(0, y, z),
+                    new Vector3(m_AxisLength, y, z),
                     isMajor
                 );
             }
         }
 
-        private void CreateGridPlaneYZ()
+        private void CreateGridPlaneYZ(float x)
         {
             float spacing =
                 m_GridSettings.MinorGridSpacing;
@@ -545,8 +568,8 @@ namespace DataViz
             {
                 bool isMajor = Mathf.Approximately(y % major, 0f);
                 CreateGridLine(
-                    new Vector3(0, y, 0),
-                    new Vector3(0, y, m_AxisLength),
+                    new Vector3(x, y, 0),
+                    new Vector3(x, y, m_AxisLength),
                     isMajor
                 );
             }
@@ -554,8 +577,8 @@ namespace DataViz
             {
                 bool isMajor = Mathf.Approximately(z % major, 0f);
                 CreateGridLine(
-                    new Vector3(0, 0, z),
-                    new Vector3(0, m_AxisLength, z),
+                    new Vector3(x, 0, z),
+                    new Vector3(x, m_AxisLength, z),
                     isMajor
                 );
             }

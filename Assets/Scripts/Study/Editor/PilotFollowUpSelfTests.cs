@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using DataViz.Flow;
 using DataViz.Networking;
 using UnityEngine;
+using UnityEngine.UI;
 using Col = DataViz.Study.SelfTestKit.Col;
 using Model = DataViz.MenuUI.LayersPanelModel;
 
@@ -9,6 +11,7 @@ namespace DataViz.Study
     /// <summary>
     /// Pilot 2 follow-ups on the general CUBIA branch. PF-01: a per-layer point size that does not
     /// change the active layer, logged with the resized layer's name and undoable on the dashboard.
+    /// PF-02: plot text 1.5x, dark menus (MenuTheme.Dark / RemapToDark) and dark studio colours.
     /// </summary>
     public static class PilotFollowUpSelfTests
     {
@@ -159,6 +162,83 @@ namespace DataViz.Study
             int s0 = Model.Signature(stack, null);
             a.PointSize = 0.05f;
             t.True("signature follows the size", Model.Signature(stack, null) != s0);
+        }
+        // ------------------------------------------------------------------ PF-02
+
+        static float Luma(Color c) => 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+
+        [SelfTest("PF-02: plot text scale")]
+        static void TextScale(SelfTestTally t)
+        {
+            t.Near("scale", 1.5f, PlotText.Scale);
+            t.Near("axis title 7 -> 10.5", 10.5f, PlotText.Size(7f));
+            t.Near("tick 14 -> 21", 21f, PlotText.Size(14f));
+        }
+
+        [SelfTest("PF-02: dark menu theme")]
+        static void DarkTheme(SelfTestTally t)
+        {
+            MenuTheme light = MenuTheme.LoadLight();
+            t.True("edit mode: Load is the light asset", ReferenceEquals(light, MenuTheme.Load()));
+            MenuTheme dark = MenuTheme.Dark(light);
+            try
+            {
+                t.True("dark panel", Luma(dark.PanelColor) < 0.2f);
+                t.True("light text", Luma(dark.Text) > 0.8f);
+                t.True("light muted text", Luma(dark.TextMuted) > 0.5f);
+                t.True("dark button", Luma(dark.ButtonColor) < 0.3f);
+                t.True("dark active tile", Luma(dark.TileActiveColor) < 0.35f);
+                t.True("accent kept", dark.Accent == light.Accent);
+                t.True("font kept", dark.Font == light.Font);
+                t.Near("body size kept", light.BodyFontSize, dark.BodyFontSize);
+                t.True("asset untouched", Luma(light.PanelColor) > 0.8f && Luma(light.Text) < 0.2f);
+
+                ColorBlock lb = light.ButtonColors();
+                t.True("light buttons as before", lb.normalColor == Color.white && lb.selectedColor == Color.white &&
+                    lb.highlightedColor == new Color(0.90f, 0.93f, 0.98f, 1f) && lb.pressedColor == new Color(0.78f, 0.83f, 0.92f, 1f) &&
+                    Mathf.Approximately(lb.colorMultiplier, 1f));
+                ColorBlock db = dark.ButtonColors();
+                t.Near("dark buttons: normal shows the fill as is", 1f, db.normalColor.r * db.colorMultiplier, 1e-4f);
+                t.True("dark buttons: highlight brightens", db.highlightedColor.r * db.colorMultiplier > 1.2f);
+
+                Color32 round(Color c) => c; // the scene stores 8-bit colours
+                t.True("panel face", MenuTheme.RemapToDark((Color)round(light.PanelColor), light, dark) == dark.PanelColor);
+                t.True("active tile", MenuTheme.RemapToDark((Color)round(light.TileActiveColor), light, dark) == dark.TileActiveColor);
+                t.True("button fill", MenuTheme.RemapToDark(light.ButtonColor, light, dark) == dark.ButtonColor);
+                Color hint = new Color(light.Text.r, light.Text.g, light.Text.b, 0.8f);
+                Color hintDark = MenuTheme.RemapToDark(hint, light, dark);
+                t.True("hint text: light, alpha kept", Luma(hintDark) > 0.8f && Mathf.Abs(hintDark.a - 0.8f) < 1e-4f);
+                Color divider = MenuTheme.RemapToDark((Color)round(light.Divider), light, dark);
+                t.True("divider: light at its alpha", Luma(divider) > 0.8f && Mathf.Abs(divider.a - ((Color)round(light.Divider)).a) < 1e-4f);
+                t.True("muted heading", MenuTheme.RemapToDark((Color)round(light.TextMuted), light, dark) == dark.TextMuted);
+                t.True("icon tint", MenuTheme.RemapToDark((Color)round(light.IconTint), light, dark) == dark.IconTint);
+                t.True("accent stays", MenuTheme.RemapToDark(light.Accent, light, dark) == light.Accent);
+                t.True("plain white stays", MenuTheme.RemapToDark(Color.white, light, dark) == Color.white);
+                var widget = new Color32(0x2E, 0x2E, 0x2E, 0xFF);
+                t.True("dark widget stays", MenuTheme.RemapToDark(widget, light, dark) == (Color)widget);
+                // Idempotent: the bootstrap remaps again, and runtime-built menus are dark already.
+                foreach (Color c in new[] { dark.PanelColor, dark.PanelOutline, dark.Text, dark.TextMuted, dark.IconTint,
+                                            dark.TileActiveColor, dark.Divider, dark.ButtonColor, dark.Accent })
+                {
+                    Color stored = (Color)round(c);
+                    t.True("already dark stays " + ColorUtility.ToHtmlStringRGBA(c), MenuTheme.RemapToDark(stored, light, dark) == stored);
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(dark);
+            }
+        }
+
+        [SelfTest("PF-02: dark studio colours")]
+        static void StudioColours(SelfTestTally t)
+        {
+            t.True("sky dark", Luma(DarkStudio.SkyZenith) < 0.05f && Luma(DarkStudio.SkyHorizon) < 0.1f);
+            t.True("floor dark", Luma(DarkStudio.FloorBase) < 0.1f);
+            t.True("table dark", Luma(DarkStudio.TableTop) < 0.2f);
+            t.True("grid lighter than floor", Luma(DarkStudio.FloorMinor) > Luma(DarkStudio.FloorBase) + 0.15f &&
+                Luma(DarkStudio.FloorMajor) > Luma(DarkStudio.FloorMinor));
+            t.True("depth cues light", Luma(DarkStudio.Ring) > 0.8f && Luma(DarkStudio.Post) > 0.8f && Luma(DarkStudio.Footprint) > 0.75f);
         }
     }
 }

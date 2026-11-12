@@ -382,7 +382,7 @@ namespace DataViz
                 textGo.transform.SetParent(go.transform, false);
                 textGo.transform.localPosition = new Vector3(m_Offset / Mathf.Max(m_LabelScale, 0.0001f), 0f, 0f);
                 TextMeshPro tmp = textGo.AddComponent<TextMeshPro>();
-                tmp.fontSize = m_FontSize;
+                tmp.fontSize = PlotText.Size(m_FontSize);
                 tmp.alignment = TextAlignmentOptions.MidlineLeft;
                 tmp.textWrappingMode = TextWrappingModes.NoWrap;
                 tmp.overflowMode = TextOverflowModes.Overflow;

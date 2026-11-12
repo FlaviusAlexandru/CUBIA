@@ -475,7 +475,7 @@ namespace DataViz
         // Approximate height of one title line in plot units (TextMeshPro: about fontSize / 10
         // units per line, times the label's 0.03 scale), half of it per extra line.
         private float ExtraTitleOffset(int lineCount) =>
-            lineCount <= 1 ? 0f : (lineCount - 1) * 0.5f * m_AxisLabelFontSize * 0.1f * 0.03f;
+            lineCount <= 1 ? 0f : (lineCount - 1) * 0.5f * PlotText.Size(m_AxisLabelFontSize) * 0.1f * 0.03f;
 
 
         private void CreateGridPlaneXY()
@@ -654,7 +654,7 @@ namespace DataViz
                 textObj.AddComponent<TextMeshPro>();
 
             tmp.text = text;
-            tmp.fontSize = 14f;
+            tmp.fontSize = PlotText.Size(14f);
             tmp.alignment =
                 TextAlignmentOptions.Center;
 
@@ -775,7 +775,7 @@ namespace DataViz
 
             // --- USE TextMeshPro (3D) INSTEAD OF TextMeshProUGUI ---
             TextMeshPro tmpText = textObj.AddComponent<TextMeshPro>();
-            tmpText.fontSize = m_AxisLabelFontSize;
+            tmpText.fontSize = PlotText.Size(m_AxisLabelFontSize);
             tmpText.fontStyle = FontStyles.Bold;
             tmpText.alignment = TextAlignmentOptions.Center;
             tmpText.color = Color.white;

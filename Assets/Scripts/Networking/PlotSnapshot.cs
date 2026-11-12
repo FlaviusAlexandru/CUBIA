@@ -532,6 +532,7 @@ namespace DataViz.Networking
         SetLayerLabelColumn,    // Int
         SetComputedAxis,        // Int
         SetComputedColumn,      // Int
+        SetLayerPointSize,      // Float (appended for PF-01)
     }
 
     /// <summary>

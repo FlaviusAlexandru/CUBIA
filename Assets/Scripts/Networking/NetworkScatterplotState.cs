@@ -342,6 +342,7 @@ namespace DataViz.Networking
                 case PlotOp.SetComputedValue: m.RequestSetComputedValueRpc(r.Layer, r.Float); return true;
                 case PlotOp.SetComputedSpan: m.RequestSetComputedSpanRpc(r.Layer, r.Float); return true;
                 case PlotOp.SetLayerLineWidth: m.RequestSetLayerLineWidthRpc(r.Layer, r.Float); return true;
+                case PlotOp.SetLayerPointSize: m.RequestSetLayerPointSizeRpc(r.Layer, r.Float); return true;
                 case PlotOp.SetLayerColour: m.RequestSetLayerColourRpc(r.Layer, LayerSnapshot.UnpackColour(unchecked((uint)r.Int))); return true;
                 case PlotOp.SetLayerGlyph: m.RequestSetLayerGlyphRpc(r.Layer, r.Int); return true;
                 case PlotOp.SetLayerTimeBehaviour: m.RequestSetLayerTimeBehaviourRpc(r.Layer, (LayerTimeBehaviour)r.Int); return true;

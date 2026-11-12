@@ -768,6 +768,29 @@ namespace DataViz
             LayerSettingChanged();
         }
 
+        /// <summary>
+        /// A point layer's PointSize (clamped 0..MaxPointSize), without making it the active layer
+        /// (PF-01: the size controls in the layer lists). Refused on a computed layer (it draws a
+        /// line: use its line width). Raises like the other layer settings, so the lists refresh.
+        /// </summary>
+        public void RequestSetLayerPointSizeRpc(string layerId, float size)
+        {
+            if (ForwardLayerOp(PlotOp.SetLayerPointSize, layerId, floatArg: size)) return;
+            if (!TryResolve(layerId, "SetLayerPointSize", out PlotLayer layer)) return;
+            if (!float.IsFinite(size)) return;
+            if (layer.Kind == LayerKind.Computed)
+            {
+                Refuse("A computed layer has no points: change its line width instead");
+                return;
+            }
+
+            float clamped = Mathf.Clamp(size, 0f, MaxPointSize);
+            if (layer.PointSize == clamped)
+                return;
+            layer.PointSize = clamped;
+            LayerSettingChanged();
+        }
+
         private bool TryResolveComputed(string layerId, string request, out PlotLayer layer)
         {
             if (!TryResolve(layerId, request, out layer))

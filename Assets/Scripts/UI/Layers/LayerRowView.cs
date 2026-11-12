@@ -9,8 +9,10 @@ namespace DataViz.MenuUI
 {
     /// <summary>
     /// One row of the Layers tab's list, built with PanelKit: a select button showing the layer's
-    /// name, kind and tags and its warning, then show/hide, up, down, duplicate and remove. Remove
-    /// asks once more ("Sure?") before it fires, because only the facilitator can undo.
+    /// name, kind and tags and its warning, then show/hide, up, down, duplicate and remove, and
+    /// under them the layer's point size stepper (PF-01: resize a layer without selecting it;
+    /// hidden on computed layers). Remove asks once more ("Sure?") before it fires, because only
+    /// the facilitator can undo.
     /// The row only reports clicks (by layer id); LayersPanel turns them into requests.
     /// </summary>
     public sealed class LayerRowView : MonoBehaviour
@@ -19,12 +21,16 @@ namespace DataViz.MenuUI
         public const float Height = 84f;
         const float k_SelectWidth = 240f;
         const float k_SmallButton = 44f;
+        const float k_ButtonH = 40f;      // two button rows: actions on top, the size stepper below
+        const float k_ButtonGap = 4f;
         const float k_ConfirmSeconds = 3f;
 
         public event Action<string> Selected, VisibilityToggled, MovedUp, MovedDown, Duplicated, Removed;
+        /// <summary>Layer id and direction (-1 smaller, +1 bigger) of a size stepper click.</summary>
+        public event Action<string, int> SizeStepped;
 
-        Button m_Select, m_Eye, m_Up, m_Down, m_Duplicate, m_Remove;
-        TMP_Text m_Name, m_Tags, m_Warning;
+        Button m_Select, m_Eye, m_Up, m_Down, m_Duplicate, m_Remove, m_SizeDown, m_SizeUp;
+        TMP_Text m_Name, m_Tags, m_Warning, m_SizeLabel, m_SizeText;
         Image m_ActiveBar;
         string m_LayerId = "";
         float m_ConfirmUntil = -1f;
@@ -45,17 +51,31 @@ namespace DataViz.MenuUI
             view.m_Tags = PanelKit.Label(view.m_Select.transform, "Tags", "", 20f, -34f, k_SelectWidth - 30f, 22f, theme.BodyFontSize * 0.72f, theme.TextMuted);
             view.m_Warning = PanelKit.Label(view.m_Select.transform, "Warning", "", 20f, -56f, k_SelectWidth - 30f, 22f, theme.BodyFontSize * 0.72f, PanelKit.Warning);
 
-            float bx = k_SelectWidth + 8f;
-            float by = -(Height - 56f) * 0.5f;
-            view.m_Eye = PanelKit.Button(root, "Visible", "Shown", null, bx, by, 80f, 56f, PanelKit.Style.Secondary, theme.BodyFontSize * 0.8f);
-            bx += 80f + 4f;
-            view.m_Up = PanelKit.Button(root, "Up", "▲", null, bx, by, k_SmallButton, 56f, PanelKit.Style.Secondary);
-            bx += k_SmallButton + 4f;
-            view.m_Down = PanelKit.Button(root, "Down", "▼", null, bx, by, k_SmallButton, 56f, PanelKit.Style.Secondary);
-            bx += k_SmallButton + 4f;
-            view.m_Duplicate = PanelKit.Button(root, "Duplicate", "Copy", null, bx, by, 64f, 56f, PanelKit.Style.Secondary, theme.BodyFontSize * 0.8f);
-            bx += 64f + 4f;
-            view.m_Remove = PanelKit.Button(root, "Remove", "Remove", null, bx, by, Width - bx, 56f, PanelKit.Style.Secondary, theme.BodyFontSize * 0.8f);
+            float left = k_SelectWidth + 8f;
+            float bx = left;
+            float by = 0f;
+            float small = theme.BodyFontSize * 0.8f;
+            view.m_Eye = PanelKit.Button(root, "Visible", "Shown", null, bx, by, 80f, k_ButtonH, PanelKit.Style.Secondary, small);
+            bx += 80f + k_ButtonGap;
+            view.m_Up = PanelKit.Button(root, "Up", "▲", null, bx, by, k_SmallButton, k_ButtonH, PanelKit.Style.Secondary);
+            bx += k_SmallButton + k_ButtonGap;
+            view.m_Down = PanelKit.Button(root, "Down", "▼", null, bx, by, k_SmallButton, k_ButtonH, PanelKit.Style.Secondary);
+            bx += k_SmallButton + k_ButtonGap;
+            view.m_Duplicate = PanelKit.Button(root, "Duplicate", "Copy", null, bx, by, 64f, k_ButtonH, PanelKit.Style.Secondary, small);
+            bx += 64f + k_ButtonGap;
+            view.m_Remove = PanelKit.Button(root, "Remove", "Remove", null, bx, by, Width - bx, k_ButtonH, PanelKit.Style.Secondary, small);
+
+            // Size stepper (PF-01), second row.
+            bx = left;
+            by = -(Height - k_ButtonH);
+            view.m_SizeLabel = PanelKit.Label(root, "SizeLabel", "Size", bx + 6f, by, 74f, k_ButtonH, small, theme.TextMuted);
+            bx += 80f + k_ButtonGap;
+            view.m_SizeDown = PanelKit.Button(root, "SizeDown", "−", null, bx, by, 60f, k_ButtonH, PanelKit.Style.Secondary);
+            bx += 60f + k_ButtonGap;
+            view.m_SizeText = PanelKit.Label(root, "SizeText", "", bx, by, 100f, k_ButtonH, theme.BodyFontSize * 0.9f, theme.Text,
+                TMPro.TextAlignmentOptions.Center);
+            bx += 100f + k_ButtonGap;
+            view.m_SizeUp = PanelKit.Button(root, "SizeUp", "+", null, bx, by, 60f, k_ButtonH, PanelKit.Style.Secondary);
 
             view.m_Select.onClick.AddListener(() => view.Selected?.Invoke(view.m_LayerId));
             view.m_Eye.onClick.AddListener(() => view.VisibilityToggled?.Invoke(view.m_LayerId));
@@ -63,6 +83,8 @@ namespace DataViz.MenuUI
             view.m_Down.onClick.AddListener(() => view.MovedDown?.Invoke(view.m_LayerId));
             view.m_Duplicate.onClick.AddListener(() => view.Duplicated?.Invoke(view.m_LayerId));
             view.m_Remove.onClick.AddListener(view.OnRemoveClicked);
+            view.m_SizeDown.onClick.AddListener(() => view.SizeStepped?.Invoke(view.m_LayerId, -1));
+            view.m_SizeUp.onClick.AddListener(() => view.SizeStepped?.Invoke(view.m_LayerId, +1));
             return view;
         }
 
@@ -82,6 +104,14 @@ namespace DataViz.MenuUI
             SetLabel(m_Eye, row.VisibleText);
             m_Up.interactable = row.CanMoveUp;
             m_Down.interactable = row.CanMoveDown;
+
+            m_SizeLabel.gameObject.SetActive(row.ShowSize);
+            m_SizeText.gameObject.SetActive(row.ShowSize);
+            m_SizeDown.gameObject.SetActive(row.ShowSize);
+            m_SizeUp.gameObject.SetActive(row.ShowSize);
+            m_SizeText.text = row.SizeText;
+            m_SizeDown.interactable = row.CanShrink;
+            m_SizeUp.interactable = row.CanGrow;
         }
 
         void OnRemoveClicked()

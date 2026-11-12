@@ -285,16 +285,24 @@ namespace DataViz.Study
             return redo;
         }
 
-        // One button per PreparedViews.Layered, in a new row under the three view buttons.
+        // One button per PreparedViews.Layered, in a new row under the three view buttons, then one
+        // per PreparedViews.Analysis (PF-05 to PF-07, facilitator-only like every dashboard button) in a row under that.
         void BuildLayeredViewButtons()
         {
             VisualElement viewsRow = m_ViewButtons[2]?.parent ?? m_ViewButtons[0]?.parent;
             VisualElement section = viewsRow?.parent;
             if (section == null) return;
-            var row = new VisualElement { name = DashboardIds.LayeredViews };
+            VisualElement layered = BuildViewRow(DashboardIds.LayeredViews, PreparedViews.Layered);
+            section.Insert(section.IndexOf(viewsRow) + 1, layered);
+            section.Insert(section.IndexOf(layered) + 1, BuildViewRow(DashboardIds.AnalysisViews, PreparedViews.Analysis));
+        }
+
+        VisualElement BuildViewRow(string name, IReadOnlyList<PreparedView> views)
+        {
+            var row = new VisualElement { name = name };
             row.AddToClassList("dash-row");
             row.AddToClassList("dash-views");
-            foreach (PreparedView view in PreparedViews.Layered)
+            foreach (PreparedView view in views)
             {
                 var button = new Button(() => ApplyPreparedView(view)) { text = view.Title, tooltip = LayeredTooltip(view) };
                 button.AddToClassList("dash-button");
@@ -302,7 +310,7 @@ namespace DataViz.Study
                 row.Add(button);
                 m_LayeredViewButtons.Add(button);
             }
-            section.Insert(section.IndexOf(viewsRow) + 1, row);
+            return row;
         }
 
         static string LayeredTooltip(PreparedView view)
@@ -313,7 +321,11 @@ namespace DataViz.Study
                 string part = layer.Part > 0 ? layer.Part.ToString(k_Inv) : "{part}";
                 parts.Add($"{layer.Name ?? layer.Kind}: {{participant}}_part{part}_{layer.Kind}{PreparedViews.Extension}");
             }
-            return "Layers: " + string.Join("; ", parts);
+            string text = "Layers: " + string.Join("; ", parts);
+            PreparedHighlight h = view.Highlight;
+            if (h != null)
+                text += $"; the {h.Count.ToString(k_Inv)} rows with the highest {h.RankColumn} and their {h.KeyColumn} at full opacity, the rest dimmed";
+            return text;
         }
 
         // The Layers section goes right after the section that holds the dataset dropdown (B13).
@@ -1371,7 +1383,14 @@ namespace DataViz.Study
             }
             else
             {
-                SetViewsStatus($"{view.Title} · {string.Join(" + ", files)}{rescanHint}");
+                string highlight = "";
+                PreparedHighlight h = view.Highlight;
+                if (h != null)
+                {
+                    List<float> keys = PreparedViews.TopKeys(DatasetRegistry.Get(files[h.RankLayer]), h.RankColumn, h.KeyColumn, h.Count, out _);
+                    highlight = keys != null && keys.Count > 0 ? $" · full opacity: {h.KeyColumn} {PreparedViews.KeyText(keys)}" : "";
+                }
+                SetViewsStatus($"{view.Title} · {string.Join(" + ", files)}{highlight}{rescanHint}");
             }
         }
 

@@ -26,6 +26,25 @@ namespace DataViz.Study
         /// (Kind and the column fields); views saved before layers stay single-layer plots (LFR-31).
         /// </summary>
         public PreparedLayer[] Layers;
+        /// <summary>
+        /// PF-06: rows to keep at full opacity, worked out from the data when the view is applied;
+        /// every other row is dimmed by a filter on each layer. Null = no highlight.
+        /// </summary>
+        public PreparedHighlight Highlight;
+    }
+
+    /// <summary>
+    /// PF-06: the <see cref="Count"/> rows of layer <see cref="RankLayer"/> with the highest
+    /// <see cref="RankColumn"/> (ties: lowest <see cref="KeyColumn"/> first) pick their
+    /// KeyColumn values; every layer then gets a filter on KeyColumn with one range per value, so
+    /// the matching rows are drawn as usual and the rest stay drawn, dimmed (CUBIA's filter dim).
+    /// </summary>
+    public sealed class PreparedHighlight
+    {
+        public int RankLayer;      // index into PreparedView.Layers
+        public string RankColumn;  // e.g. ReactionTimeOrLifetime
+        public string KeyColumn;   // e.g. MoleOrder; needed on every layer
+        public int Count = 3;      // at most MultiplayerScatterplotManager.MaxFilterRanges
     }
 
     /// <summary>
@@ -157,6 +176,157 @@ namespace DataViz.Study
             },
         };
 
+        // PF-05 to PF-07: analysis views on the converter's DATA-01 columns (facilitator buttons, Q6).
+        static PreparedLayer PathLayer(string colour) => new PreparedLayer
+        {
+            Name = "Path",
+            Kind = KindMovement,
+            X = "LaserX", Y = "LaserY", Z = "Time", // the laser dot on the wall, time in depth (as the cursor layers)
+            Color = colour,
+            TimeBehaviour = LayerTimeBehaviour.Always, // no time column: the whole path at once
+        };
+
+        static PreparedLayer TargetLayer(string colour) => new PreparedLayer
+        {
+            Name = "Moles",
+            Kind = KindMoles,
+            X = "MoleX", Y = "MoleY", Z = "SpawnTime", // same frame as PathLayer
+            Color = colour,
+            TimeBehaviour = LayerTimeBehaviour.Always,
+            DefaultGlyph = GlyphStar,
+            FixedColour = colour == null ? k_MoleColour : (Color32?)null,
+            Label = "MoleOrder",
+        };
+
+        /// <summary>Movement column of PF-05 (DATA-01): the HitOffset of the mole a row leads to; empty = not hit.</summary>
+        public const string SegmentHitOffset = "SegmentHitOffset";
+        /// <summary>Movement column of PF-06 (DATA-01): the ReactionTimeOrLifetime of the mole a row leads to.</summary>
+        public const string SegmentTime = "SegmentTime";
+        /// <summary>PF-06: how many of the slowest moles stay at full opacity.</summary>
+        public const int SlowestCount = 3;
+
+        /// <summary>
+        /// PF-05 to PF-07: the analysis buttons (kept apart from <see cref="All"/> and
+        /// <see cref="Layered"/>, whose lists and tests stay as they were). Built like the layered views.
+        /// </summary>
+        public static readonly IReadOnlyList<PreparedView> Analysis = new List<PreparedView>
+        {
+            new PreparedView
+            {
+                Id = "accuracy-path",
+                Title = "Accuracy path",
+                // Rows leading to an unhit mole have no SegmentHitOffset: skipped with the usual warning.
+                Layers = new[] { PathLayer(SegmentHitOffset), TargetLayer(null) },
+            },
+            new PreparedView
+            {
+                Id = "where-slow",
+                Title = "Where was I slow",
+                Layers = new[] { PathLayer(SegmentTime), TargetLayer("ReactionTimeOrLifetime") },
+                Highlight = new PreparedHighlight
+                {
+                    RankLayer = 1, RankColumn = "ReactionTimeOrLifetime", KeyColumn = "MoleOrder", Count = SlowestCount,
+                },
+            },
+            new PreparedView
+            {
+                Id = "hit-position",
+                Title = "Hit position",
+                Layers = new[]
+                {
+                    new PreparedLayer
+                    {
+                        Name = "Hits",
+                        Kind = KindMoles,
+                        // Z = MoleOrder: the hits in game order front to back, so hits on the same
+                        // spot of the mole do not hide each other and each point stays one mole.
+                        // Unhit moles have no HitOffsetX/Y and are skipped by the empty-cell rule.
+                        X = "HitOffsetX", Y = "HitOffsetY", Z = "MoleOrder",
+                        Color = "MoleOrderLabel",
+                        TimeBehaviour = LayerTimeBehaviour.Always,
+                        Label = "MoleOrder",
+                    },
+                },
+            },
+        };
+
+        /// <summary>
+        /// PF-06: the <paramref name="count"/> values of <paramref name="keyColumn"/> on the rows with
+        /// the highest <paramref name="rankColumn"/>; ties go to the lower key. Rows without a rank or
+        /// key value are left out; a key is listed once. Fewer rows give fewer keys. Null when a
+        /// column is missing (<paramref name="missing"/> lists them, "MoleOrder, ReactionTimeOrLifetime")
+        /// or the dataset is null ("(no dataset)").
+        /// </summary>
+        public static List<float> TopKeys(DatasetColumnar ds, string rankColumn, string keyColumn, int count, out string missing)
+        {
+            missing = "";
+            if (ds == null)
+            {
+                missing = "(no dataset)";
+                return null;
+            }
+            var absent = new List<string>();
+            int rank = Resolve(ds, rankColumn, absent);
+            int key = Resolve(ds, keyColumn, absent);
+            if (string.IsNullOrEmpty(rankColumn) || string.IsNullOrEmpty(keyColumn) || absent.Count > 0)
+            {
+                missing = absent.Count > 0 ? string.Join(", ", absent) : "(no column named)";
+                return null;
+            }
+
+            var rows = new List<(float rank, float key)>();
+            for (int r = 0; r < ds.RowCount; r++)
+            {
+                if (!ds.HasValue(r, rank) || !ds.HasValue(r, key)) continue;
+                float rv = ds.GetNumericValue(r, rank), kv = ds.GetNumericValue(r, key);
+                if (float.IsFinite(rv) && float.IsFinite(kv)) rows.Add((rv, kv));
+            }
+            rows.Sort((a, b) => a.rank != b.rank ? b.rank.CompareTo(a.rank) : a.key.CompareTo(b.key));
+
+            var keys = new List<float>();
+            foreach (var row in rows)
+            {
+                if (keys.Count >= count) break;
+                if (!keys.Contains(row.key)) keys.Add(row.key);
+            }
+            return keys;
+        }
+
+        /// <summary>
+        /// PF-06: before anything changes, the highlight's columns exist (RankColumn and KeyColumn on
+        /// the rank layer's file, KeyColumn on every other file). False with the same message
+        /// CheckLayers gives ("P07_part1_movement.cdataset has no column MoleOrder: re-run the converter").
+        /// </summary>
+        public static bool CheckHighlight(PreparedView view, IReadOnlyList<string> files, out string error)
+        {
+            error = null;
+            PreparedHighlight h = view?.Highlight;
+            if (h == null) return true;
+            if (view.Layers == null || files == null || files.Count != view.Layers.Length || h.RankLayer < 0 || h.RankLayer >= files.Count)
+            {
+                error = "(no layers)";
+                return false;
+            }
+            for (int i = 0; i < files.Count; i++)
+            {
+                DatasetColumnar ds = DatasetRegistry.Get(files[i]);
+                if (ds == null)
+                {
+                    error = $"Could not load {files[i]} (see Console)";
+                    return false;
+                }
+                var absent = new List<string>();
+                if (i == h.RankLayer) Resolve(ds, h.RankColumn, absent);
+                Resolve(ds, h.KeyColumn, absent);
+                if (absent.Count > 0)
+                {
+                    error = $"{files[i]} has no column {string.Join(", ", absent)}: re-run the converter";
+                    return false;
+                }
+            }
+            return true;
+        }
+
         /// <summary>
         /// Participant id as the session log names it ("07", "P07", "p07" → "P07"; only letters,
         /// digits, '-' and '_' kept; empty → "Punknown"). Taken from StudyLogWriter.BuildFileName so
@@ -216,12 +386,14 @@ namespace DataViz.Study
             return missing;
         }
 
-        /// <summary>The view with this id (in All or Layered), or null.</summary>
+        /// <summary>The view with this id (in All, Layered or Analysis), or null.</summary>
         public static PreparedView Find(string id)
         {
             foreach (PreparedView v in All)
                 if (v.Id == id) return v;
             foreach (PreparedView v in Layered)
+                if (v.Id == id) return v;
+            foreach (PreparedView v in Analysis)
                 if (v.Id == id) return v;
             return null;
         }
@@ -322,7 +494,7 @@ namespace DataViz.Study
                     return false;
                 }
             }
-            return true;
+            return CheckHighlight(view, files, out error);
         }
 
         /// <summary>
@@ -342,6 +514,7 @@ namespace DataViz.Study
             if (m.LoadedDataset == null || !SameFile(m.CurrentDatasetName, files[0]))
                 return $"Could not load {files[0]} (see Console)";
             string firstId = m.ActiveLayerId;
+            var ids = new List<string> { firstId };
             string error = ConfigureLayer(m, firstId, view.Layers[0]);
             if (error != null) return error;
 
@@ -352,7 +525,14 @@ namespace DataViz.Study
                 PlotLayer added = m.ActiveLayer;
                 if (added == null || added.Id == before || added.Dataset == null || !SameFile(added.DatasetName, files[i]))
                     return $"Could not add {files[i]} as a layer (see Console)";
+                ids.Add(added.Id);
                 error = ConfigureLayer(m, added.Id, view.Layers[i]);
+                if (error != null) return error;
+            }
+
+            if (view.Highlight != null)
+            {
+                error = ApplyHighlight(m, view.Highlight, ids);
                 if (error != null) return error;
             }
 
@@ -360,6 +540,46 @@ namespace DataViz.Study
             if (m.IsPlaying) m.RequestPlaybackToggleRpc(false);
             m.RequestTimeScrubRpc(0f);
             return null;
+        }
+
+        /// <summary>
+        /// PF-06 after the layers are configured (their filters cleared): the keys of the slowest
+        /// rows from the rank layer, then on every layer a filter on KeyColumn with one range
+        /// [key, key] per key (the first filter entry, through the range editor's request).
+        /// </summary>
+        static string ApplyHighlight(MultiplayerScatterplotManager m, PreparedHighlight h, IReadOnlyList<string> ids)
+        {
+            if (h.RankLayer < 0 || h.RankLayer >= ids.Count) return "(no rank layer)";
+            PlotLayer rankLayer = null;
+            foreach (PlotLayer l in m.Layers)
+                if (l.Id == ids[h.RankLayer]) rankLayer = l;
+            List<float> keys = TopKeys(rankLayer?.Dataset, h.RankColumn, h.KeyColumn, h.Count, out string missing);
+            if (keys == null) return $"{rankLayer?.DatasetName ?? "(rank layer)"} has no column {missing}: re-run the converter";
+            if (keys.Count == 0) return null; // nothing to rank: every row stays at full opacity
+
+            var ranges = keys.ConvertAll(k => new MultiplayerScatterplotManager.FilterRange { min = k, max = k });
+            foreach (string id in ids)
+            {
+                using (m.EditLayerScope(id))
+                {
+                    PlotLayer layer = m.EditLayer;
+                    int column = layer.Dataset != null ? layer.Dataset.GetColumnIndex(h.KeyColumn) : -1;
+                    if (column < 0) return $"{layer.DatasetName} has no column {h.KeyColumn}: re-run the converter";
+                    m.RequestFilterIndexRpc(column);
+                    if (!m.RequestSetFilterRangesRpc(ranges))
+                        return $"{layer.DatasetName}: could not filter {h.KeyColumn} (needs a numeric column)";
+                }
+            }
+            return null;
+        }
+
+        /// <summary>"12, 7, 30": the keys TopKeys picked, for the status line.</summary>
+        public static string KeyText(IReadOnlyList<float> keys)
+        {
+            if (keys == null) return "";
+            var parts = new List<string>();
+            foreach (float k in keys) parts.Add(k.ToString("0.##", CultureInfo.InvariantCulture));
+            return string.Join(", ", parts);
         }
 
         static bool SameFile(string a, string b) =>

@@ -29,6 +29,7 @@ namespace DataViz.Study
         public const string PreparedView3 = "view-3";              // Button (text = PreparedViews.All[2].Title)
         public const string ViewsStatus = "views-status";          // Label (missing file / applied / rescan hint)
         public const string LayeredViews = "views-layered";        // VisualElement built in code under view-1..3 (one Button per PreparedViews.Layered)
+        public const string AnalysisViews = "views-analysis";      // VisualElement built in code under views-layered (one Button per PreparedViews.Analysis, PF-05..07)
 
         // Dataset
         public const string DatasetDropdown = "dataset-list";      // DropdownField

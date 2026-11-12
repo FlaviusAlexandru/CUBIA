@@ -156,7 +156,7 @@ namespace DataViz.Networking
             Color fill = style switch
             {
                 Style.Primary => theme.Accent,
-                Style.Secondary => new Color(1f, 1f, 1f, 0.92f),
+                Style.Secondary => theme.ButtonColor,
                 _ => new Color(1f, 1f, 1f, 0f),
             };
             Color ink = style == Style.Primary ? Color.white : theme.Accent;
@@ -167,16 +167,7 @@ namespace DataViz.Networking
             var button = rt.gameObject.AddComponent<Button>();
             button.targetGraphic = background;
             button.navigation = new Navigation { mode = Navigation.Mode.None };
-            button.colors = new ColorBlock
-            {
-                normalColor = Color.white,
-                highlightedColor = new Color(0.90f, 0.93f, 0.98f, 1f),
-                pressedColor = new Color(0.78f, 0.83f, 0.92f, 1f),
-                selectedColor = Color.white, // no sticky highlight after a ray click
-                disabledColor = new Color(1f, 1f, 1f, 0.45f),
-                colorMultiplier = 1f,
-                fadeDuration = 0.08f,
-            };
+            button.colors = theme.ButtonColors(); // light theme: white / 0.90 / 0.78 tints as before
 
             bool hasText = !string.IsNullOrEmpty(text);
             float iconSize = Mathf.Min(h * 0.55f, fontSize * 1.4f);
@@ -204,7 +195,7 @@ namespace DataViz.Networking
         public static void SetHighlighted(Button button, bool primary)
         {
             MenuTheme theme = Theme;
-            ((Image)button.targetGraphic).color = primary ? theme.Accent : new Color(1f, 1f, 1f, 0.92f);
+            ((Image)button.targetGraphic).color = primary ? theme.Accent : theme.ButtonColor;
             Color ink = primary ? Color.white : theme.Accent;
             TMP_Text label = LabelOf(button);
             if (label != null) label.color = ink;

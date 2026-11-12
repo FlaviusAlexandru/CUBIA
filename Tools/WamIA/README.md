@@ -5,8 +5,8 @@ into three CUBIA datasets for the prepared views (`PreparedViews.cs`):
 
 | file | rows | prepared view |
 |---|---|---|
-| `{P}_part{n}_movement.csv` | one per sample, first spawn to last outcome | Controller path (P2/P5) |
-| `{P}_part{n}_moles.csv` | one per spawned mole | Accuracy per target (P6/P8, FR-05) |
+| `{P}_part{n}_movement.csv` | one per sample, first spawn to last outcome | Controller path (P2/P5), Accuracy path (PF-05), Where was I slow (PF-06) |
+| `{P}_part{n}_moles.csv` | one per spawned mole | Accuracy per target (P6/P8, FR-05), Where was I slow (PF-06), Hit position (PF-07) |
 | `{P}_part{n}_combined.csv` | cursor samples + moles on the wall plane | Targets and cursor (P7/P8) |
 
 It then runs CUBIA's `Assets/Scripts/Data/preprocess_csv_columnar.py` on **just these three files**,
@@ -68,7 +68,10 @@ the latest mole spawned at or before this sample; samples between a hit and the 
 the next mole), `MoleOrderLabel` ("Mole 01", text for colour), `ControllerX/Y/Z` (main controller),
 `ControllerSpeed` (m/s, step distance / dt, 50 ms centred moving average, never empty), `LaserX/Y/Z`
 (main laser cursor on the wall; samples more than 0.5 m off the wall plane are interpolated over),
-`HeadX/Y/Z`, `HeadYaw` (degrees, + = right), `HeadPitch` (degrees, + = up).
+`HeadX/Y/Z`, `HeadYaw` (degrees, + = right), `HeadPitch` (degrees, + = up), `SegmentHitOffset`
+(the `HitOffset` of the row's mole, i.e. the accuracy of the target this stretch of path leads to;
+**empty = that mole was not hit**), `SegmentTime` (the `ReactionTimeOrLifetime` of the row's mole;
+never empty). Both are a join on `MoleOrder` (DATA-01).
 
 **moles**: `Part`, `Phase`, `MoleOrder`, `MoleOrderLabel`, `GridX`, `GridY` (from MoleId
 `OOOOXYY`), `MoleX/Y/Z`, `SpawnTime`, `EndTime` (when the mole was hit or expired; if the game stopped first, the
@@ -85,8 +88,8 @@ line), `PeakSpeed` (max ControllerSpeed in that window), `MainHand`.
 `Time` (mole = SpawnTime), `MoleOrder`, `Label` (mole number as text: "1", "2", …; CUBIA reads it as
 numeric), `MoleOrderLabel` ("Mole 01", categorical: use this one for colour), `Phase`, `Part`.
 
-**Empty cells:** only ReactionTime and HitOffset/X/Y are ever empty, and only for moles that were not
-hit. They stay Numeric in the .cdataset however many moles are missed: CUBIA's preprocessor judges a
+**Empty cells:** only ReactionTime and HitOffset/X/Y (moles) and SegmentHitOffset (movement) are ever
+empty, and only for moles that were not hit. They stay Numeric in the .cdataset however many moles are missed: CUBIA's preprocessor judges a
 column's type on its non-empty cells and marks the empty ones as missing.
 
 **Timing note:** `ReactionTime` comes from the game clock (MoleActivatedDuration), while `SpawnTime`

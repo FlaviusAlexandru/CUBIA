@@ -75,7 +75,8 @@ META_COLS = ["SessionID", "SamplingFrequency"]
 # --- output whitelists (exact column order of each CSV) --------------------------------------
 MOVEMENT_COLS = ["Time", "Part", "Phase", "MoleOrder", "MoleOrderLabel",
                  "ControllerX", "ControllerY", "ControllerZ", "ControllerSpeed",
-                 "LaserX", "LaserY", "LaserZ", "HeadX", "HeadY", "HeadZ", "HeadYaw", "HeadPitch"]
+                 "LaserX", "LaserY", "LaserZ", "HeadX", "HeadY", "HeadZ", "HeadYaw", "HeadPitch",
+                 "SegmentHitOffset", "SegmentTime"]
 MOLES_COLS = ["Part", "Phase", "MoleOrder", "MoleOrderLabel", "GridX", "GridY",
               "MoleX", "MoleY", "MoleZ", "SpawnTime", "EndTime", "Outcome", "ReactionTime",
               "ReactionTimeOrLifetime", "HitOffset", "HitOffsetX", "HitOffsetY",
@@ -449,6 +450,10 @@ def convert(event_path, sample_path, meta_path, participant, part, downsample=1,
     })
     for c in ("HeadX", "HeadY", "HeadZ", "HeadYaw", "HeadPitch"):
         mv[c] = mv[c].interpolate(limit_direction="both")
+    # DATA-01: the mole each row leads to (join by MoleOrder). SegmentHitOffset is empty for an
+    # unhit mole (as its HitOffset); SegmentTime is its ReactionTimeOrLifetime, never empty.
+    mv["SegmentHitOffset"] = moles["HitOffset"].to_numpy(float)[order - 1]
+    mv["SegmentTime"] = moles["ReactionTimeOrLifetime"].to_numpy(float)[order - 1]
 
     # ---- combined rows -------------------------------------------------------------------
     cur = pd.DataFrame({"RowType": "Cursor", "X": mv["LaserX"], "Y": mv["LaserY"], "Z": mv["LaserZ"],

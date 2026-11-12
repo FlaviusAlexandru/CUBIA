@@ -41,7 +41,8 @@ SCRIPT = HERE / "wam_to_cubia.py"
 EXPECTED_GRID = [(5, 3), (6, 4), (8, 5), (2, 1), (3, 4), (4, 2), (5, 3), (6, 2), (8, 1), (2, 5), (3, 2), (7, 4)]
 FORBIDDEN = ["Email", "Age", "Gender", "InjuryDate", "ProfileName", "ProfileID", "DeviceID",
              "Handedness", "ParticipantID", "ParticipantId", "SessionID", "ProfileGroup"]
-MAY_BE_EMPTY = {"ReactionTime", "HitOffset", "HitOffsetX", "HitOffsetY"}   # empty = mole not hit
+MAY_BE_EMPTY = {"ReactionTime", "HitOffset", "HitOffsetX", "HitOffsetY",
+                "SegmentHitOffset"}   # empty = mole not hit
 
 failures = []
 
@@ -142,6 +143,7 @@ def test_csv_outputs(tmp):
     check("ControllerSpeed has no empty/NaN",
           all(is_num(r["ControllerSpeed"]) and not math.isnan(float(r["ControllerSpeed"])) for r in mv))
     check("laser rows on the wall plane", all(6.0 < float(r["LaserZ"]) < 7.0 for r in mv))
+    check_segments(mv, moles)
 
     kinds = {r["RowType"] for r in comb}
     check("combined has Cursor and Mole rows", kinds == {"Cursor", "Mole"}, kinds)
@@ -178,6 +180,28 @@ def check_end_time(moles, tag=""):
     return filled
 
 
+def check_segments(mv, moles, tag=""):
+    """DATA-01: each movement row carries its mole's HitOffset (SegmentHitOffset, empty when the
+    mole was not hit) and ReactionTimeOrLifetime (SegmentTime, never empty), joined by MoleOrder."""
+    header = list(mv[0].keys())
+    check(f"{tag}movement ends with SegmentHitOffset, SegmentTime", header[-2:] == ["SegmentHitOffset", "SegmentTime"],
+          header[-3:])
+    by_order = {int(m["MoleOrder"]): m for m in moles}
+    bad_offset, bad_time = [], []
+    for i, r in enumerate(mv):
+        m = by_order[int(r["MoleOrder"])]
+        want = m["HitOffset"]
+        got = r.get("SegmentHitOffset", "?")
+        if (want == "") != (got == "") or (want != "" and abs(float(want) - float(got)) > 1e-6):
+            bad_offset.append((i, r["MoleOrder"], want, got))
+        got = r.get("SegmentTime", "")
+        if not is_num(got) or not math.isfinite(float(got)) or abs(float(got) - float(m["ReactionTimeOrLifetime"])) > 1e-6:
+            bad_time.append((i, r["MoleOrder"], m["ReactionTimeOrLifetime"], got))
+    check(f"{tag}SegmentHitOffset = HitOffset of the row's mole (empty if not hit)", not bad_offset, bad_offset[:5])
+    check(f"{tag}SegmentTime = ReactionTimeOrLifetime of the row's mole, never empty", not bad_time, bad_time[:5])
+    return not bad_offset and not bad_time
+
+
 def test_end_time_not_resolved(tmp):
     """The pilot hits every mole. Cut the outcome events after the last spawn (and those between
     spawns 6 and 7) so some moles are NotResolved: EndTime must still be filled."""
@@ -195,8 +219,8 @@ def test_end_time_not_resolved(tmp):
     with open(event, "w", encoding="utf-8", newline="") as f:
         csv.writer(f, delimiter=";", lineterminator="\n").writerows(r for i, r in enumerate(rows) if i not in cut)
     out = tmp / "unresolved_csv"
-    p, _ = run("--event", event, "--sample", SAMPLE, "--participant", "07", "--part", "1", "--out", out,
-               "--no-preprocess")
+    pre = ("--preprocessor", PREPROCESSOR) if PREPROCESSOR.is_file() else ("--no-preprocess",)
+    p, _ = run("--event", event, "--sample", SAMPLE, "--participant", "07", "--part", "1", "--out", out, *pre)
     check("exit code 0", p.returncode == 0, p.stderr)
     if p.returncode != 0:
         return
@@ -211,6 +235,21 @@ def test_end_time_not_resolved(tmp):
           [(i, moles[i]["EndTime"]) for i in open_])
     check("NotResolved last mole: EndTime = game end (>= end of movement)",
           float(moles[11]["EndTime"]) >= float(mv[-1]["Time"]), (moles[11]["EndTime"], mv[-1]["Time"]))
+
+    # DATA-01 with unhit moles: their rows have an empty SegmentHitOffset and a filled SegmentTime
+    unhit = {int(moles[i]["MoleOrder"]) for i in open_}
+    rows = [r for r in mv if int(r["MoleOrder"]) in unhit]
+    check("NotResolved: movement rows lead to unhit moles", len(rows) > 0, unhit)
+    check("NotResolved: their SegmentHitOffset is empty", rows and all(r["SegmentHitOffset"] == "" for r in rows))
+    check("NotResolved: hit moles' rows keep a SegmentHitOffset",
+          all(r["SegmentHitOffset"] != "" for r in mv if int(r["MoleOrder"]) not in unhit))
+    check_segments(mv, moles, "NotResolved: ")
+    if PREPROCESSOR.is_file():
+        rows_n, types = read_cdataset_columns(out / "ProcessedData" / "P07_part1_movement.cdataset")
+        sparse = sum(r["SegmentHitOffset"] == "" for r in mv) / len(mv)
+        print(f"  ({sparse:.0%} of movement rows have an empty SegmentHitOffset)")
+        check("NotResolved: sparse SegmentHitOffset stays Numeric in the .cdataset",
+              types.get("SegmentHitOffset") == "Numeric" and types.get("SegmentTime") == "Numeric", types)
 
 
 def test_logs_folder_and_preprocessor(tmp):
@@ -244,7 +283,7 @@ def test_logs_folder_and_preprocessor(tmp):
                   "MoleOrderLabel": "Categorical", "HitOffset": "Numeric", "ReactionTimeOrLifetime": "Numeric",
                   "SpawnTime": "Numeric", "EndTime": "Numeric", "MoleX": "Numeric"},
         "movement": {"ControllerSpeed": "Numeric", "Time": "Numeric", "ControllerX": "Numeric",
-                     "MoleOrderLabel": "Categorical"},
+                     "MoleOrderLabel": "Categorical", "SegmentHitOffset": "Numeric", "SegmentTime": "Numeric"},
         "combined": {"RowType": "Categorical", "MoleOrderLabel": "Categorical", "X": "Numeric", "Time": "Numeric"},
     }
     for kind, cols in want.items():

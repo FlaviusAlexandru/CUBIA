@@ -26,12 +26,30 @@ namespace DataViz
         const float k_MaxDiscreteTimeSteps = 1000f;
         const float k_WholeNumberEpsilon = 1e-3f;
 
+        // Light colours only: the studio is dark (PF-02), so dark blues and purples disappeared
+        // against it. Same hue order as before (red, blue, green, yellow, cyan, magenta, ...).
         static readonly Color[] k_CategoricalPalette =
         {
-            Color.red, Color.blue, Color.green, Color.yellow, Color.cyan, Color.magenta,
-            new Color(1f, 0.5f, 0f), new Color(0.5f, 0f, 0.5f), new Color(0f, 0.5f, 0.5f),
-            new Color(0.7f, 0.2f, 0.2f), new Color(0.2f, 0.7f, 0.2f), new Color(0.2f, 0.2f, 0.7f)
+            new Color(1f, 0.38f, 0.33f), new Color(0.38f, 0.62f, 1f), new Color(0.35f, 0.9f, 0.42f),
+            new Color(1f, 0.9f, 0.3f), new Color(0.35f, 0.95f, 0.95f), new Color(1f, 0.45f, 0.9f),
+            new Color(1f, 0.62f, 0.2f), new Color(0.78f, 0.62f, 1f), new Color(0.45f, 0.85f, 0.75f),
+            new Color(1f, 0.65f, 0.68f), new Color(0.75f, 1f, 0.42f), new Color(0.6f, 0.82f, 1f)
         };
+
+        // Numeric colour scale for a dark background: light blue (low) through near-white to light red
+        // (high). The old Color.Lerp(blue, red) went through dark purple, which vanished on black.
+        static readonly Color k_NumericLow = new Color(0.35f, 0.62f, 1f);
+        static readonly Color k_NumericMid = new Color(0.94f, 0.94f, 0.94f);
+        static readonly Color k_NumericHigh = new Color(1f, 0.38f, 0.3f);
+
+        /// <summary>Colour for a value normalised to 0..1 on a numeric colour column.</summary>
+        public static Color NumericColour(float norm)
+        {
+            norm = Mathf.Clamp01(norm);
+            return norm < 0.5f
+                ? Color.Lerp(k_NumericLow, k_NumericMid, norm * 2f)
+                : Color.Lerp(k_NumericMid, k_NumericHigh, (norm - 0.5f) * 2f);
+        }
 
         // Discrete/continuous verdict per (dataset instance, column); weak so unloaded datasets can go.
         static readonly ConditionalWeakTable<DatasetColumnar, Dictionary<int, bool>> s_DiscreteCache = new();
@@ -183,7 +201,7 @@ namespace DataViz
                         if (range > 0.00001f)
                             norm = (rawVal - colourMin) / range;
                         norm = Mathf.Clamp01(norm);
-                        pointColor = Color.Lerp(Color.blue, Color.red, norm);
+                        pointColor = NumericColour(norm);
                     }
                     else
                     {

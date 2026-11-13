@@ -92,7 +92,7 @@ namespace DataViz.Study
             t.Eq("colour skip count", 1, frame.Layers[0].Info.SkippedNoEncodingValue);
             t.Eq("colour skip no axis skip", 0, frame.Layers[0].Info.SkippedNoAxisValue);
             t.True("colour skip warning", frame.Layers[0].Info.Warning != null && frame.Layers[0].Info.Warning.Contains("no value in C"));
-            t.True("colour scale from valid rows (5 → blue)", b.Colors[0].b > 0.99f && b.Colors[0].r < 0.01f);
+            t.True("colour scale from valid rows (5 → blue)", b.Colors[0] == LayerPointBuilder.NumericColour(0f));
 
             a.SizeMapped = true;
             a.SizeColumnIndex = 4;

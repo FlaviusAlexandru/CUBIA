@@ -510,6 +510,13 @@ namespace DataViz.Study
             if (m == null || view?.Layers == null || files == null || files.Count != view.Layers.Length || files.Count == 0)
                 return "(no layers)";
 
+            // One rebuild for the whole view instead of one per request (review finding 6).
+            using (m.BatchChanges())
+                return ApplyLayersBatched(m, view, files);
+        }
+
+        static string ApplyLayersBatched(MultiplayerScatterplotManager m, PreparedView view, IReadOnlyList<string> files)
+        {
             m.RequestLoadDatasetRpc(files[0]); // synchronous on the host
             if (m.LoadedDataset == null || !SameFile(m.CurrentDatasetName, files[0]))
                 return $"Could not load {files[0]} (see Console)";

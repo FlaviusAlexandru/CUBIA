@@ -107,6 +107,8 @@ namespace DataViz.Study
         public const string SetLayerLineWidth = "SetLayerLineWidth";
         public const string SetLayerShuffleUnlocked = "SetLayerShuffleUnlocked"; // local to this device, not in the snapshot
         public const string Redo = "Redo";
+        public const string SaveView = "SaveView";         // LFR-33; NewValue = view name
+        public const string LoadSavedView = "LoadSavedView"; // LFR-33; NewValue = view name (replaces the stack)
 
         /// <summary>
         /// True for actions about the whole plot or the session, whose rows leave the Layer column

@@ -36,7 +36,7 @@ namespace DataViz.MenuUI
         const float k_Half = 275f;
         const float k_MessageSeconds = 4f;
 
-        enum Picker { None, Dataset, SubsetColumn, SubsetValue, Computed, EndColumn, LabelColumn, OrderColumn }
+        enum Picker { None, Dataset, SubsetColumn, SubsetValue, Computed, EndColumn, LabelColumn, OrderColumn, SavedView }
 
         MultiplayerScatterplotManager m_Manager;
         ScatterplotVisualizer m_Visualizer;
@@ -46,7 +46,7 @@ namespace DataViz.MenuUI
         // list
         readonly List<LayerRowView> m_Rows = new();
         TMP_Text m_EmptyText, m_PageText, m_AddHint;
-        Button m_PrevPage, m_NextPage, m_AddDataset, m_AddSubset, m_AddComputed;
+        Button m_PrevPage, m_NextPage, m_AddDataset, m_AddSubset, m_AddComputed, m_SavedViews;
 
         // message line
         TMP_Text m_Message;
@@ -82,6 +82,7 @@ namespace DataViz.MenuUI
         LayersPanelModel.View m_View;
         int m_Page;
         bool m_Dirty = true;
+        bool m_ResetPending;
         int m_Signature;
         string m_LastActiveId;
 
@@ -129,6 +130,11 @@ namespace DataViz.MenuUI
             m_NextPage = PanelKit.Button(pager, "Next", "▶", null, 280f, 0f, 60f, 50f, PanelKit.Style.Secondary);
             m_PrevPage.onClick.AddListener(() => { m_Page--; m_Dirty = true; });
             m_NextPage.onClick.AddListener(() => { m_Page++; m_Dirty = true; });
+
+            // LFR-33: save the whole stack, or replace it with a saved one (beside the pager, which hides on one page).
+            m_SavedViews = PanelKit.Button(panel, "SavedViews", "Saved views", null, k_Left + 400f, -532f, 190f, 50f, PanelKit.Style.Secondary,
+                body * 0.85f);
+            m_SavedViews.onClick.AddListener(() => OpenPicker(Picker.SavedView, ""));
 
             RectTransform add = PanelKit.Rect(panel, "AddLayer", k_Left, -594f, LayerRowView.Width, 110f);
             m_AddDataset = PanelKit.Button(add, "AddDataset", "Add dataset", null, 0f, 0f, 190f, 60f, PanelKit.Style.Primary);
@@ -306,9 +312,22 @@ namespace DataViz.MenuUI
                 m_Manager.OnLayersChanged -= MarkDirty;
                 m_Manager.OnPlotMessage -= OnPlotMessage;
             }
+            // No SetActive here: the panel is mid-deactivation, and toggling the keyboard or the
+            // picker now logs "already being activated or deactivated". Reset on the next frame shown.
+            m_ResetPending = true;
+        }
+
+        /// <summary>Closes a picker or the keyboard left open when the panel was hidden. Runs before
+        /// the first frame the panel is visible again, so the old state never shows.</summary>
+        void ResetTransientUI()
+        {
+            m_ResetPending = false;
             if (m_Keyboard != null)
                 m_Keyboard.CloseSilently();
-            ClosePicker();
+            if (m_KeyboardBackdrop != null && m_KeyboardBackdrop.activeSelf)
+                m_KeyboardBackdrop.SetActive(false);
+            if (m_Picker != Picker.None)
+                ClosePicker();
         }
 
         void MarkDirty() => m_Dirty = true;
@@ -323,6 +342,8 @@ namespace DataViz.MenuUI
 
         void LateUpdate()
         {
+            if (m_ResetPending)
+                ResetTransientUI();
             if (m_MessageUntil > 0f && Time.unscaledTime > m_MessageUntil)
             {
                 m_MessageUntil = 0f;
@@ -398,7 +419,7 @@ namespace DataViz.MenuUI
             m_AddHint.text = v.AddHint;
 
             // A picker for a layer that is gone (or no longer active) closes.
-            if (m_Picker != Picker.None && m_Picker != Picker.Dataset && m_PickerLayerId != stack.ActiveLayerId)
+            if (m_Picker != Picker.None && m_Picker != Picker.Dataset && m_Picker != Picker.SavedView && m_PickerLayerId != stack.ActiveLayerId)
                 ClosePicker();
 
             ApplyProps(v.Props);
@@ -598,6 +619,10 @@ namespace DataViz.MenuUI
                     title = "Order " + layer.Name + " by";
                     options = LayersPanelModel.ColumnOptions(LayersPanelModel.RowDataset(stack, layer), "Time column (default)");
                     break;
+                case Picker.SavedView:
+                    title = "Saved views (loading one replaces all layers)";
+                    options = LayersPanelModel.SavedViewOptions(SavedViewStore.All().ConvertAll(v => v.Name));
+                    break;
                 default:
                     return;
             }
@@ -681,7 +706,37 @@ namespace DataViz.MenuUI
                 case Picker.OrderColumn:
                     m_Manager.RequestSetComputedColumnRpc(id, option.Value);
                     break;
+                case Picker.SavedView:
+                    if (option.Value < 0) OpenSaveView();
+                    else LoadView(option.Text);
+                    break;
             }
+        }
+
+        // ------------------------------------------------------------------ saved views (LFR-33)
+
+        void OpenSaveView()
+        {
+            if (m_Manager == null || m_Keyboard == null) return;
+            m_KeyboardBackdrop.SetActive(true);
+            m_KeyboardBackdrop.transform.SetAsLastSibling();
+            m_Keyboard.Open("Name the view", SavedViewStore.NextDefaultName(), VRKeyboard.Layout.Text, 40, "Save", name =>
+            {
+                if (m_Manager == null) return;
+                bool replaced = SavedViewStore.Find(name) != null;
+                SavedView view = SavedViewStore.SaveCurrent(m_Manager, name);
+                if (view != null)
+                    m_Manager.PostPlotMessage((replaced ? "Replaced saved view " : "Saved view ") + view.Name, PlotMessageKind.Info);
+            });
+        }
+
+        void LoadView(string name)
+        {
+            if (m_Manager == null) return;
+            SavedView view = SavedViewStore.Find(name);
+            string error = view == null ? "Saved view not found" : SavedViewStore.Load(m_Manager, view);
+            m_Manager.PostPlotMessage(error == null ? "Loaded view " + name : $"Could not load {name}: {error}",
+                error == null ? PlotMessageKind.Info : PlotMessageKind.Refused);
         }
     }
 }

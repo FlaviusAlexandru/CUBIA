@@ -292,8 +292,8 @@ namespace DataViz.Study
         // Raised on every manager change, and every frame during playback (scrub only).
         void HandlePlotSettingsChanged()
         {
-            if (InFacilitatorChange || m_Manager == null)
-                return;
+            if (InFacilitatorChange || m_Manager == null || m_Manager.IsPlaybackTick)
+                return; // a playback frame only moves the time, which the log does not diff
 
             PlotSnapshot current = Capture();
             if (!PlotStateDiff.HasRelevantChange(m_Last, current))

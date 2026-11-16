@@ -100,8 +100,83 @@ namespace DataViz
         /// </summary>
         public IDisposable EditLayerScope(string layerId)
         {
+            // Also a change batch: events wait until the scope closes, so menus never show the
+            // scoped layer as if it were the active one, and the plot rebuilds once.
             m_EditScopes.Add(layerId ?? "");
+            m_BatchDepth++;
             return new EditScope(this, m_EditScopes.Count);
+        }
+
+        // ---- change batches ----------------------------------------------------------------
+
+        private int m_BatchDepth;
+        private bool m_PendingDatasetLoaded, m_PendingBookmarks, m_PendingLayers, m_PendingSettings;
+
+        /// <summary>True while a BatchChanges or EditLayerScope is open (events are being held).</summary>
+        public bool IsBatchingChanges => m_BatchDepth > 0;
+
+        /// <summary>
+        /// Holds OnDatasetLoaded, OnBookmarksChanged, OnLayersChanged and OnPlotSettingsChanged until
+        /// the outermost batch is disposed, then raises each held event once, in that order. Use it
+        /// around a run of requests (a prepared view, loading a saved view) so the plot and the menus
+        /// rebuild once instead of once per request. Nestable; EditLayerScope opens one too.
+        /// </summary>
+        public IDisposable BatchChanges()
+        {
+            m_BatchDepth++;
+            return new BatchScope(this);
+        }
+
+        private sealed class BatchScope : IDisposable
+        {
+            private MultiplayerScatterplotManager m_Owner;
+            public BatchScope(MultiplayerScatterplotManager owner) => m_Owner = owner;
+
+            public void Dispose()
+            {
+                MultiplayerScatterplotManager owner = m_Owner;
+                m_Owner = null;
+                owner?.EndBatch();
+            }
+        }
+
+        private void EndBatch()
+        {
+            if (m_BatchDepth > 0)
+                m_BatchDepth--;
+            if (m_BatchDepth > 0)
+                return;
+            bool dataset = m_PendingDatasetLoaded, bookmarks = m_PendingBookmarks;
+            bool layers = m_PendingLayers, settings = m_PendingSettings;
+            m_PendingDatasetLoaded = m_PendingBookmarks = m_PendingLayers = m_PendingSettings = false;
+            if (dataset) OnDatasetLoaded?.Invoke();
+            if (bookmarks) OnBookmarksChanged?.Invoke();
+            if (layers) OnLayersChanged?.Invoke();
+            if (settings) OnPlotSettingsChanged?.Invoke();
+        }
+
+        private void FireDatasetLoaded()
+        {
+            if (m_BatchDepth > 0) { m_PendingDatasetLoaded = true; return; }
+            OnDatasetLoaded?.Invoke();
+        }
+
+        private void FireBookmarksChanged()
+        {
+            if (m_BatchDepth > 0) { m_PendingBookmarks = true; return; }
+            OnBookmarksChanged?.Invoke();
+        }
+
+        private void FireLayersChanged()
+        {
+            if (m_BatchDepth > 0) { m_PendingLayers = true; return; }
+            OnLayersChanged?.Invoke();
+        }
+
+        private void FirePlotSettingsChanged()
+        {
+            if (m_BatchDepth > 0) { m_PendingSettings = true; return; }
+            OnPlotSettingsChanged?.Invoke();
         }
 
         private sealed class EditScope : IDisposable
@@ -119,10 +194,12 @@ namespace DataViz
             {
                 if (m_Owner == null)
                     return;
-                List<string> scopes = m_Owner.m_EditScopes;
+                MultiplayerScatterplotManager owner = m_Owner;
+                List<string> scopes = owner.m_EditScopes;
                 if (scopes.Count >= m_Depth)
                     scopes.RemoveRange(m_Depth - 1, scopes.Count - m_Depth + 1);
                 m_Owner = null;
+                owner.EndBatch(); // after the scope is gone, so handlers see the active layer
             }
         }
 
@@ -223,14 +300,14 @@ namespace DataViz
             if (!ReferenceEquals(shown, m_AnnouncedDataset))
             {
                 m_AnnouncedDataset = shown;
-                OnDatasetLoaded?.Invoke();
-                OnBookmarksChanged?.Invoke();
+                FireDatasetLoaded();
+                FireBookmarksChanged();
             }
 
             if (layersChanged)
-                OnLayersChanged?.Invoke();
+                FireLayersChanged();
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -371,9 +448,9 @@ namespace DataViz
             TrimDatasets();
 
             m_AnnouncedDataset = ShownDataset();
-            OnDatasetLoaded?.Invoke();
-            OnBookmarksChanged?.Invoke();
-            OnPlotSettingsChanged?.Invoke();
+            FireDatasetLoaded();
+            FireBookmarksChanged();
+            FirePlotSettingsChanged();
             return true;
         }
 
@@ -402,7 +479,7 @@ namespace DataViz
             if (EditLayer.Kind == LayerKind.Computed)
             {
                 PostPlotMessage("A computed layer takes its mapping from its source", PlotMessageKind.Refused);
-                OnPlotSettingsChanged?.Invoke();
+                FirePlotSettingsChanged();
                 return true;
             }
 
@@ -416,7 +493,7 @@ namespace DataViz
                 return true;
 
             PostPlotMessage(message, PlotMessageKind.Refused);
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
             return false;
         }
 

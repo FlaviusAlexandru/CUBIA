@@ -454,6 +454,20 @@ namespace DataViz.MenuUI
             return string.Compare(a, b, StringComparison.Ordinal);
         }
 
+        /// <summary>The saved-views picker: "Save current view…" first, then each saved view by name (Text = name).</summary>
+        public static List<Option> SavedViewOptions(IEnumerable<string> viewNames)
+        {
+            var list = new List<Option> { new Option(SaveCurrentViewLabel, -1) };
+            int i = 0;
+            if (viewNames != null)
+                foreach (string name in viewNames)
+                    if (!string.IsNullOrEmpty(name))
+                        list.Add(new Option(name, i++, name));
+            return list;
+        }
+
+        public const string SaveCurrentViewLabel = "+ Save current view";
+
         public static List<Option> ComputedKindOptions()
         {
             var list = new List<Option>();

@@ -415,8 +415,8 @@ namespace DataViz
                 Stack.Touch();
 
                 if (structureChanged)
-                    OnLayersChanged?.Invoke();
-                OnPlotSettingsChanged?.Invoke();
+                    FireLayersChanged();
+                FirePlotSettingsChanged();
             }
             else if (structureChanged)
             {
@@ -430,7 +430,7 @@ namespace DataViz
             if (RefuseLayerEdit() || !CheckAxisMapping(0, columnIndex)) return;
 
             XColumnIndex = columnIndex;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestYColumnRpc(int columnIndex)
@@ -439,7 +439,7 @@ namespace DataViz
             if (RefuseLayerEdit() || !CheckAxisMapping(1, columnIndex)) return;
 
             YColumnIndex = columnIndex;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestZColumnRpc(int columnIndex)
@@ -448,7 +448,7 @@ namespace DataViz
             if (RefuseLayerEdit() || !CheckAxisMapping(2, columnIndex)) return;
 
             ZColumnIndex = columnIndex;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestColorColumnRpc(int columnIndex)
@@ -457,7 +457,7 @@ namespace DataViz
             if (RefuseLayerEdit()) return;
 
             ColorColumnIndex = columnIndex;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestPointSizeRpc(float size)
@@ -466,7 +466,7 @@ namespace DataViz
             if (RefuseLayerEdit()) return;
 
             PointSize = Mathf.Clamp(size, 0f, MaxPointSize);
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestTimeColumnRpc(int columnIndex)
@@ -476,7 +476,7 @@ namespace DataViz
 
             TimeColumnIndex = columnIndex;
             IsPlaying = false; // stop any running playback when the column changes
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestTimeScrubRpc(float normalizedValue)
@@ -484,7 +484,7 @@ namespace DataViz
             if (ForwardPlotOp(PlotOp.TimeScrub, floatArg: normalizedValue)) return;
 
             TimeScrub = Mathf.Clamp01(normalizedValue);
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestPlaybackToggleRpc(bool isPlaying)
@@ -499,7 +499,7 @@ namespace DataViz
                 TimeScrub = 0f;
             }
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>Sets PlaybackRate, clamped to [MinPlaybackRate, MaxPlaybackRate]. Shared; the scrub position is kept.</summary>
@@ -511,7 +511,7 @@ namespace DataViz
                 return;
 
             PlaybackRate = Mathf.Clamp(rate, MinPlaybackRate, MaxPlaybackRate);
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -538,7 +538,7 @@ namespace DataViz
             ShowTooltips = showTooltips;
             // Usually, we would refresh the toggle when switching datasets, but user testing found this to be annoying, so we don't refresh the toggle anymore.
             //Code stays commented out for posterity, in case we want to re-enable this behavior in the future.
-            //OnPlotSettingsChanged?.Invoke();
+            //FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -568,7 +568,7 @@ namespace DataViz
                 Filters[0].Ranges.Clear(); // ranges are in the old column's units
             }
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>Dropdown path: sets the value of the FIRST filter entry (no-op without one).</summary>
@@ -582,7 +582,7 @@ namespace DataViz
 
             Filters[0].Label = filterLabel ?? "";
             Filters[0].Ranges.Clear(); // a picked value replaces any ranges
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -602,7 +602,7 @@ namespace DataViz
             if (RefuseLayerEdit()) return false;
 
             Filters.Add(new FilterEntry { ColumnIndex = columnIndex, Label = filterLabel });
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
             return true;
         }
 
@@ -615,7 +615,7 @@ namespace DataViz
                 return;
 
             Filters.RemoveAt(filterIndex);
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestClearFiltersRpc()
@@ -624,7 +624,7 @@ namespace DataViz
             if (RefuseLayerEdit()) return;
 
             Filters.Clear();
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -661,7 +661,7 @@ namespace DataViz
             }
             entry.Ranges.Sort((a, b) => a.min != b.min ? a.min.CompareTo(b.min) : a.max.CompareTo(b.max));
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
             return true;
         }
 
@@ -699,7 +699,7 @@ namespace DataViz
             if (RefuseLayerEdit()) return;
 
             SizeColumnIndex = columnIndex;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestSizeMappedRpc(bool mapped)
@@ -708,7 +708,7 @@ namespace DataViz
             if (RefuseLayerEdit()) return;
 
             SizeMapped = mapped;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public void RequestGlyphColumnRpc(int columnIndex)
@@ -721,7 +721,7 @@ namespace DataViz
                 GlyphRanges.Clear();
 
             GlyphColumnIndex = columnIndex;
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -746,7 +746,7 @@ namespace DataViz
                 GlyphAssignments.Add(new GlyphAssignment { Label = label, GlyphIndex = glyphIndex });
             }
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -797,7 +797,7 @@ namespace DataViz
             }
             GlyphRanges.Sort(CompareGlyphRanges);
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
             return true;
         }
 
@@ -902,8 +902,8 @@ namespace DataViz
 
             if (LoadedDataset != null)
                 ColumnPrefsStore.SetBookmarks(LoadedDataset.Name, bookmarks);
-            OnBookmarksChanged?.Invoke();
-            OnPlotSettingsChanged?.Invoke();
+            FireBookmarksChanged();
+            FirePlotSettingsChanged();
         }
 
         /// <summary>
@@ -939,8 +939,8 @@ namespace DataViz
         /// </summary>
         public void NotifyColumnPrefsChanged()
         {
-            OnBookmarksChanged?.Invoke();
-            OnPlotSettingsChanged?.Invoke();
+            FireBookmarksChanged();
+            FirePlotSettingsChanged();
         }
 
         // ---- Multiplayer -------------------------------------------------------------------------
@@ -983,8 +983,18 @@ namespace DataViz
                 IsPlaying = false; // stop at the end rather than looping silently
             }
 
-            OnPlotSettingsChanged?.Invoke();
+            // Only TimeScrub moved (unless playback just stopped): listeners that ignore the time
+            // can skip their work this frame (review finding 8).
+            IsPlaybackTick = IsPlaying;
+            try { FirePlotSettingsChanged(); }
+            finally { IsPlaybackTick = false; }
         }
+
+        /// <summary>
+        /// True only while OnPlotSettingsChanged is raised by a playback frame that changed nothing
+        /// but TimeScrub. Listeners that ignore the time (logging, undo tracking) can return early.
+        /// </summary>
+        public bool IsPlaybackTick { get; private set; }
 
         // ---- seeds ----------------------------------------------------------------------------
 

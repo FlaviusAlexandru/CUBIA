@@ -1375,7 +1375,7 @@ namespace DataViz.Study
         /// </summary>
         void TrackParticipantChange()
         {
-            if (m_FacilitatorDepth > 0 || IsLogging) return;
+            if (m_FacilitatorDepth > 0 || IsLogging || m_Manager.IsPlaybackTick) return;
             PlotSnapshot now = PlotSnapshot.Capture(m_Manager);
             if (m_LastSnapshot != null && PlotStateDiff.HasRelevantChange(m_LastSnapshot, now))
             {

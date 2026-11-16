@@ -13,6 +13,7 @@ namespace DataViz.Networking
     /// each peer resolves by DatasetName through DatasetRegistry) and LocalUnavailable (local).
     /// Treated as immutable once in a published snapshot.
     /// </summary>
+    [Serializable] // SavedViewStore stores it with JsonUtility
     public sealed class LayerSnapshot : INetworkSerializable
     {
         public string Id = "", Name = "";

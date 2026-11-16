@@ -159,7 +159,7 @@ namespace DataViz
             if (HasNamedDataset)
                 SaveShuffleLockPrefs();
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         // Before the first load (or on an empty plot) there is no dataset, or one with no name;
@@ -395,7 +395,7 @@ namespace DataViz
             if (applied == 0)
                 Debug.Log("[MultiplayerScatterplotManager] Shuffle history: none of that entry's layers is still there.");
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         // Writes every field of a ShuffleState onto the plot settings without raising events.
@@ -485,7 +485,7 @@ namespace DataViz
 
             if (LoadedDataset != null)
                 ColumnPrefsStore.SetBlacklist(LoadedDataset.Name, blacklist);
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         public bool IsColumnBlacklisted(string columnName)
@@ -532,7 +532,7 @@ namespace DataViz
             if (layerIds.Count == 0)
             {
                 PostPlotMessage("Shuffle: the first layer is computed; unlock another layer to shuffle it", PlotMessageKind.Refused);
-                OnPlotSettingsChanged?.Invoke();
+                FirePlotSettingsChanged();
                 return;
             }
 
@@ -638,7 +638,7 @@ namespace DataViz
 
             Debug.Log("[MultiplayerScatterplotManager] Shuffled -> " + string.Join("; ", logLines));
 
-            OnPlotSettingsChanged?.Invoke();
+            FirePlotSettingsChanged();
         }
 
         // The shuffle of the edit layer's fields (call inside EditLayerScope): returns the new
@@ -901,7 +901,7 @@ namespace DataViz
 
             bool changed = unlocked ? m_ShuffleUnlockedLayers.Add(layerId) : m_ShuffleUnlockedLayers.Remove(layerId);
             if (changed)
-                OnLayersChanged?.Invoke();
+                FireLayersChanged();
         }
     }
 }

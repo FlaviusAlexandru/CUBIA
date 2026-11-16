@@ -171,6 +171,8 @@ namespace DataViz
         PlotFrame m_Frame;   // a new object per build, so it is safe to keep (unlike the LastBuilt* lists)
         bool m_Dirty;
         string m_Shown = "";
+        int m_Signature;
+        bool m_HasSignature;
 
         void OnEnable()
         {
@@ -192,6 +194,7 @@ namespace DataViz
             if (m_Root != null)
                 m_Root.SetActive(false);
             m_Shown = "";
+            m_HasSignature = false;
         }
 
         void OnDestroy()
@@ -221,6 +224,14 @@ namespace DataViz
             if (m_Lines == null)
                 m_Lines = GetComponent<LayerLineRenderer>();
 
+            // During playback this runs every frame; build the text only when an input changed
+            // (review finding 8).
+            int signature = InputSignature(stack);
+            if (m_HasSignature && signature == m_Signature)
+                return;
+            m_HasSignature = true;
+            m_Signature = signature;
+
             List<LegendLine> lines = BuildLines(stack, WarningOf);
             string text = lines.Count == 0 ? "" : RichText(lines, stack);
             if (text == m_Shown)
@@ -239,6 +250,36 @@ namespace DataViz
             m_Text.text = text;
             if (!m_Root.activeSelf)
                 m_Root.SetActive(true);
+        }
+
+        // Everything BuildLines and RichText read, hashed without allocating.
+        int InputSignature(LayerStack stack)
+        {
+            var h = new HashCode();
+            if (stack == null)
+                return 0;
+            h.Add(stack.Count);
+            foreach (PlotLayer layer in stack.Layers)
+            {
+                if (layer == null) continue;
+                h.Add(layer.Id);
+                h.Add(layer.Name);
+                h.Add(layer.Visible);
+                h.Add(layer.Kind);
+                h.Add(layer.SourceLayerId);
+                h.Add(layer.Dataset);
+                h.Add(layer.GlyphColumnIndex);
+                h.Add(layer.DefaultGlyph);
+                h.Add(layer.ColorColumnIndex);
+                h.Add(layer.FixedColour);
+                h.Add(layer.Normalised);
+                h.Add(layer.LocalUnavailable);
+                h.Add(ComputedLayerBuilder.IsSourceMissing(layer, stack));
+                h.Add(m_Frame?.Find(layer.Id)?.Info.Warning);
+                h.Add(m_Labels != null ? m_Labels.GetWarning(layer) : null);
+                h.Add(m_Lines != null ? m_Lines.GetStatus(layer.Id) : null);
+            }
+            return h.ToHashCode();
         }
 
         string WarningOf(PlotLayer layer)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using DataViz.Flow;
 using DataViz.Networking;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -56,6 +57,13 @@ namespace DataViz.Study
         readonly List<Button> m_Swatches = new();
         readonly Dictionary<string, Label> m_WarningLabels = new();
 
+        // saved views (LFR-33)
+        readonly TextField m_ViewName;
+        readonly DropdownField m_Views;
+        readonly Button m_LoadView, m_DeleteView;
+        readonly Label m_ViewStatus;
+        int m_ViewsVersion = -1;
+
         List<string> m_Files = new();
         int m_Signature;
         bool m_Updating;
@@ -104,6 +112,29 @@ namespace DataViz.Study
                 "A copy of the active layer that draws only the rows passing its current filter");
             addRow3.Add(m_AddSubset);
             host.Add(addRow3);
+
+            // ---- saved views (LFR-33): the whole stack, kept across sessions
+            var viewsHeader = new Label("Saved views");
+            viewsHeader.AddToClassList("dash-section__header");
+            host.Add(viewsHeader);
+            VisualElement saveRow = Row();
+            m_ViewName = new TextField("Save as") { maxLength = 40 };
+            m_ViewName.AddToClassList("dash-grow");
+            saveRow.Add(m_ViewName);
+            saveRow.Add(ButtonOf("Save view", SaveView, "Saves every layer and its settings under this name (replaces a view of the same name)"));
+            host.Add(saveRow);
+            VisualElement loadRow = Row();
+            m_Views = new DropdownField("View");
+            m_Views.AddToClassList("dash-grow");
+            loadRow.Add(m_Views);
+            m_LoadView = ButtonOf("Load", LoadView, "Replaces all layers with the saved view (one undo step)");
+            loadRow.Add(m_LoadView);
+            m_DeleteView = ButtonOf("Delete", DeleteView, "Deletes the saved view (the plot is not changed)");
+            loadRow.Add(m_DeleteView);
+            host.Add(loadRow);
+            m_ViewStatus = Note("");
+            host.Add(m_ViewStatus);
+            RefreshViews();
 
             // ---- active layer
             m_Props = new VisualElement();
@@ -214,27 +245,32 @@ namespace DataViz.Study
         /// </summary>
         public static string WarningFor(PlotLayer layer, LayerStack stack, PlotFrame frame, LayerLineRenderer lines)
         {
+            // Runs for every layer on every frame during playback: no list, and no new string unless
+            // there are two or more lines to join (review finding 8).
             if (layer == null) return "";
-            var parts = new List<string>();
-            if (layer.LocalUnavailable) parts.Add("Not on this device: " + (layer.DatasetName ?? ""));
+            string text = "";
+            if (layer.LocalUnavailable) text = AddLine(text, "Not on this device: " + (layer.DatasetName ?? ""));
             if (layer.Kind == LayerKind.Computed)
             {
-                if (ComputedLayerBuilder.IsSourceMissing(layer, stack)) parts.Add("Source missing (kept with its last data)");
+                if (ComputedLayerBuilder.IsSourceMissing(layer, stack)) text = AddLine(text, "Source missing (kept with its last data)");
                 string status = lines != null ? lines.GetStatus(layer.Id) : "";
-                if (!string.IsNullOrEmpty(status)) parts.Add(status);
+                if (!string.IsNullOrEmpty(status)) text = AddLine(text, status);
             }
             else if (layer.Dataset == null && !layer.LocalUnavailable && !string.IsNullOrEmpty(layer.DatasetName))
             {
-                parts.Add("Dataset not loaded: " + layer.DatasetName);
+                text = AddLine(text, "Dataset not loaded: " + layer.DatasetName);
             }
             string warning = frame?.Find(layer.Id)?.Info.Warning;
-            if (!string.IsNullOrEmpty(warning)) parts.Add(warning);
-            return string.Join("\n", parts);
+            if (!string.IsNullOrEmpty(warning)) text = AddLine(text, warning);
+            return text;
         }
+
+        static string AddLine(string text, string line) => text.Length == 0 ? line : text + "\n" + line;
 
         /// <summary>Rebuilds the list and the properties when the stack or the active layer changed (or always with force).</summary>
         public void Refresh(bool force)
         {
+            RefreshViews();
             int signature = Signature();
             if (!force && signature == m_Signature) return;
             m_Signature = signature;
@@ -634,6 +670,57 @@ namespace DataViz.Study
             string id = layer.Id;
             m_Change(action, layer.Name, Bool(get(layer)), Bool(value), () => request(id, value), true);
             Refresh(true); // a refusal (e.g. Normalise off, LFR-12) leaves the toggle where the manager is
+        }
+
+        // ================================================================== saved views
+
+        void RefreshViews()
+        {
+            if (m_Views == null || m_ViewsVersion == SavedViewStore.Version) return;
+            m_ViewsVersion = SavedViewStore.Version;
+            var names = SavedViewStore.All().ConvertAll(v => v.Name);
+            string selected = m_Views.value;
+            m_Views.choices = names;
+            m_Views.SetValueWithoutNotify(names.Contains(selected) ? selected : names.Count > 0 ? names[0] : "");
+            m_LoadView.SetEnabled(names.Count > 0);
+            m_DeleteView.SetEnabled(names.Count > 0);
+            if (string.IsNullOrWhiteSpace(m_ViewName.value)) m_ViewName.SetValueWithoutNotify(SavedViewStore.NextDefaultName());
+        }
+
+        void SaveView()
+        {
+            string name = (m_ViewName.value ?? "").Trim();
+            if (name.Length == 0) name = SavedViewStore.NextDefaultName();
+            bool replaced = SavedViewStore.Find(name) != null;
+            // A log row, no undo step: the plot does not change.
+            m_Change(StudyActions.SaveView, "", "", name, () => SavedViewStore.SaveCurrent(m_Manager, name), false);
+            m_ViewName.SetValueWithoutNotify("");
+            RefreshViews();
+            m_Views.SetValueWithoutNotify(name);
+            m_ViewStatus.text = (replaced ? "Replaced " : "Saved ") + name;
+        }
+
+        void LoadView()
+        {
+            string name = m_Views.value;
+            SavedView view = SavedViewStore.Find(name);
+            string error = SavedViewStore.CheckLoad(m_Manager, view);
+            if (error != null)
+            {
+                m_ViewStatus.text = $"Could not load {name}: {error}";
+                return;
+            }
+            m_Change(StudyActions.LoadSavedView, "", m_Manager.CurrentDatasetName ?? "", name,
+                () => SavedViewStore.Load(m_Manager, view), true);
+            m_ViewStatus.text = "Loaded " + name;
+        }
+
+        void DeleteView()
+        {
+            string name = m_Views.value;
+            if (string.IsNullOrEmpty(name)) return;
+            if (SavedViewStore.Delete(name)) m_ViewStatus.text = "Deleted " + name;
+            RefreshViews();
         }
 
         // ================================================================== helpers

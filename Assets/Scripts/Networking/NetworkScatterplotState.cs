@@ -181,6 +181,16 @@ namespace DataViz.Networking
             if (!m_Manager.HasInitialised && m_Manager.LoadedDataset == null)
                 return;
 
+            // A playback frame that stays within the drift tolerance changes nothing to publish;
+            // check that before the (allocating) capture.
+            if (m_HasPublished && m_Manager.IsPlaybackTick && m_Plot.Value is { Published: true, IsPlaying: true } playing)
+            {
+                double t = NetworkManager.ServerTime.Time;
+                float tol = Mathf.Clamp(playing.EffectiveScrubPerSecond * k_PlaybackDriftSeconds, 1e-5f, k_PlaybackDriftTolerance);
+                if (Mathf.Abs(playing.ScrubAt(t) - m_Manager.TimeScrub) < tol)
+                    return;
+            }
+
             PlotSnapshot next = PlotSnapshot.Capture(m_Manager);
             foreach (LayerSnapshot layer in next.Layers)
             {

@@ -1310,6 +1310,7 @@ namespace DataViz.Study
                 }
                 m.RequestTimeColumnRpc(time); // also stops playback
                 m.RequestGlyphColumnRpc(glyph);
+                m.RequestSetLayerGlyphRpc(m.ActiveLayerId, view.DefaultGlyph); // e.g. the mole sprite on a moles file
                 if (glyph >= 0 && view.GlyphShapes != null)
                     foreach ((string label, int shape) in view.GlyphShapes)
                         m.RequestGlyphAssignmentRpc(label, shape);

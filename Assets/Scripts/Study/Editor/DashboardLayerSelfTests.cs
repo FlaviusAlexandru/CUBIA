@@ -56,7 +56,19 @@ namespace DataViz.Study
             t.Eq("targets base kind", PreparedViews.KindMovement, targets.Layers[0].Kind);
             t.Eq("targets moles kind", PreparedViews.KindMoles, targets.Layers[1].Kind);
             t.Eq("targets moles always", (int)LayerTimeBehaviour.Always, (int)targets.Layers[1].TimeBehaviour);
-            t.Eq("targets moles star", PreparedViews.GlyphStar, targets.Layers[1].DefaultGlyph);
+            t.Eq("targets moles glyph", PreparedViews.GlyphMole, targets.Layers[1].DefaultGlyph);
+            t.Eq("mole glyph name", "Mole", ScatterplotUI.k_GlyphShapeNames[PreparedViews.GlyphMole]);
+            foreach (PreparedView v in PreparedViews.Analysis)
+                foreach (PreparedLayer l in v.Layers)
+                    if (l.Kind == PreparedViews.KindMoles && l.Name == "Moles")
+                        t.Eq(v.Id + " moles glyph", PreparedViews.GlyphMole, l.DefaultGlyph);
+            foreach (PreparedView v in PreparedViews.All)
+            {
+                if (v.Kind == PreparedViews.KindMoles) t.Eq(v.Id + " default glyph", PreparedViews.GlyphMole, v.DefaultGlyph);
+                if (v.GlyphShapes != null)
+                    foreach ((string label, int glyph) in v.GlyphShapes)
+                        if (label == "Mole") t.Eq(v.Id + " Mole label glyph", PreparedViews.GlyphMole, glyph);
+            }
             t.Eq("until hit span", (int)LayerTimeBehaviour.Span, (int)View("targets-until-hit").Layers[1].TimeBehaviour);
             t.Eq("until hit end column", "EndTime", View("targets-until-hit").Layers[1].EndTime);
         }
@@ -155,7 +167,7 @@ namespace DataViz.Study
                     t.Eq("moles X", 1, moles.XColumnIndex);
                     t.Eq("moles time", 3, moles.TimeColumnIndex);
                     t.Eq("moles always", (int)LayerTimeBehaviour.Always, (int)moles.TimeBehaviour);
-                    t.Eq("moles star", PreparedViews.GlyphStar, moles.DefaultGlyph);
+                    t.Eq("moles glyph", PreparedViews.GlyphMole, moles.DefaultGlyph);
                     t.Eq("moles label", 0, moles.LabelColumnIndex);
                     t.Eq("moles end none", -1, moles.EndTimeColumnIndex);
                     t.True("moles colour", LayerSnapshot.PackColour(moles.FixedColour) == LayerSnapshot.PackColour(new Color32(242, 166, 38, 255)));

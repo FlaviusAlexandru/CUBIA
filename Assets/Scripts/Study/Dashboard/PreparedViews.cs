@@ -21,6 +21,8 @@ namespace DataViz.Study
         public string Glyph;
         /// <summary>Glyph shape per label of the Glyph column (index into ScatterplotUI.k_GlyphShapeNames). May be null.</summary>
         public (string label, int glyph)[] GlyphShapes;
+        /// <summary>The layer's own glyph, used when there is no Glyph column (index into ScatterplotUI.k_GlyphShapeNames).</summary>
+        public int DefaultGlyph = PreparedViews.GlyphCircle;
         /// <summary>
         /// LFR-27: the whole layer stack, base layer first. Null = the single-layer view above
         /// (Kind and the column fields); views saved before layers stay single-layer plots (LFR-31).
@@ -87,9 +89,11 @@ namespace DataViz.Study
         public const string KindMoles = "moles";
         public const string Extension = ".cdataset";
 
-        // Indices into ScatterplotUI.k_GlyphShapeNames { Circle, Square, Triangle, Diamond, Cross, Star }.
+        // Indices into ScatterplotUI.k_GlyphShapeNames { Circle, Square, Triangle, Diamond, Cross, Star, Mole }.
         public const int GlyphCircle = 0;
         public const int GlyphStar = 5;
+        /// <summary>PF-04: the mole sprite. Every view draws moles with it.</summary>
+        public const int GlyphMole = 6;
 
         public static readonly IReadOnlyList<PreparedView> All = new List<PreparedView>
         {
@@ -110,7 +114,7 @@ namespace DataViz.Study
                 X = "X", Y = "Y", Z = "Time", // Time on Z spreads the path in depth
                 Color = "MoleOrderLabel",
                 Glyph = "RowType",
-                GlyphShapes = new[] { ("Cursor", GlyphCircle), ("Mole", GlyphStar) },
+                GlyphShapes = new[] { ("Cursor", GlyphCircle), ("Mole", GlyphMole) },
             },
             new PreparedView
             {
@@ -120,6 +124,7 @@ namespace DataViz.Study
                 X = "MoleX", Y = "MoleY", Z = "SpawnTime",
                 Color = "HitOffset",
                 Size = "ReactionTimeOrLifetime",
+                DefaultGlyph = GlyphMole,
             },
         };
 
@@ -145,7 +150,7 @@ namespace DataViz.Study
             Time = "SpawnTime",
             EndTime = behaviour == LayerTimeBehaviour.Span ? "EndTime" : null,
             TimeBehaviour = behaviour,
-            DefaultGlyph = GlyphStar,
+            DefaultGlyph = GlyphMole,
             FixedColour = k_MoleColour,
             Label = "MoleOrder",
         };
@@ -193,7 +198,7 @@ namespace DataViz.Study
             X = "MoleX", Y = "MoleY", Z = "SpawnTime", // same frame as PathLayer
             Color = colour,
             TimeBehaviour = LayerTimeBehaviour.Always,
-            DefaultGlyph = GlyphStar,
+            DefaultGlyph = GlyphMole,
             FixedColour = colour == null ? k_MoleColour : (Color32?)null,
             Label = "MoleOrder",
         };

@@ -26,11 +26,17 @@ namespace DataViz
         public static readonly Color SkyHorizon = new Color(0.055f, 0.06f, 0.07f);
         public static readonly Color SkyGround = new Color(0.035f, 0.038f, 0.045f);
 
-        public static readonly Color FloorBase = new Color(0.06f, 0.065f, 0.075f);
-        public static readonly Color FloorMinor = new Color(0.30f, 0.32f, 0.36f);
-        public static readonly Color FloorMajor = new Color(0.55f, 0.58f, 0.63f);
-        public static readonly Color Ring = new Color(0.85f, 0.88f, 0.93f);
+        // Alex's floor (17 Nov 2026): grid lines and distance rings in the horizon colour, so they
+        // vanish and do not compete with the data; only the plot footprint stays light.
+        public static readonly Color FloorBase = new Color(0.059f, 0.067f, 0.075f);
+        public static readonly Color FloorHorizon = new Color(0.055f, 0.059f, 0.071f);
+        public static readonly Color FloorMinor = FloorHorizon;
+        public static readonly Color FloorMajor = FloorHorizon;
+        public static readonly Color Ring = FloorHorizon;
         public static readonly Color Footprint = new Color(0.78f, 0.84f, 0.92f);
+        /// <summary>The ring labels and scale posts ("5 m", "10 m", …) are hidden with the rings.</summary>
+        public static bool ShowScaleMarkers = false;
+        static readonly Color k_MarkerColour = new Color(0.85f, 0.88f, 0.93f);
         public static readonly Color Post = new Color(0.82f, 0.85f, 0.90f);
         public static readonly Color TableTop = new Color(0.13f, 0.14f, 0.16f);
 
@@ -88,7 +94,7 @@ namespace DataViz
             {
                 Material m = floorRenderer.material; // instance; the asset stays light
                 SetColour(m, "_BaseColor", FloorBase);
-                SetColour(m, "_HorizonColor", SkyHorizon);
+                SetColour(m, "_HorizonColor", FloorHorizon);
                 SetColour(m, "_MinorColor", FloorMinor);
                 SetColour(m, "_MajorColor", FloorMajor);
                 SetColour(m, "_RingColor", Ring);
@@ -98,13 +104,16 @@ namespace DataViz
             Transform markers = studio.Find("ScaleMarkers");
             if (markers == null)
                 return true;
+            markers.gameObject.SetActive(ShowScaleMarkers);
+            if (!ShowScaleMarkers)
+                return true;
             foreach (TMP_Text label in markers.GetComponentsInChildren<TMP_Text>(true))
-                label.color = new Color(Ring.r, Ring.g, Ring.b, 0.9f);
+                label.color = new Color(k_MarkerColour.r, k_MarkerColour.g, k_MarkerColour.b, 0.9f);
             foreach (Renderer r in markers.GetComponentsInChildren<Renderer>(true))
             {
                 if (r.GetComponent<TMP_Text>() != null || r.GetComponent<TMP_SubMesh>() != null)
                     continue;
-                SetColour(r.material, "_BaseColor", r.name == "Cap" ? Ring : Post);
+                SetColour(r.material, "_BaseColor", r.name == "Cap" ? k_MarkerColour : Post);
             }
             return true;
         }

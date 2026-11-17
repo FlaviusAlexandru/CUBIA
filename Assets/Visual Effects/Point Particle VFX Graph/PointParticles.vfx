@@ -923,7 +923,7 @@ MonoBehaviour:
   useSpecularMap: 0
   useNormalMap: 0
   useEmissiveMap: 0
-  colorMode: 1
+  colorMode: 3
   lightmapRemapMode: 0
   lightmapRemapRanges: 0
   useAlphaRemap: 0

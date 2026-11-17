@@ -113,11 +113,15 @@ namespace DataViz
             if (m_Staging == null || m_Staging.Length != count)
                 m_Staging = new PointData[count];
             PointData[] dataArray = m_Staging;
+            // Point colours are picked as display (sRGB) colours; the VFX graph works in linear
+            // space, so without this they showed lighter and washed out (pink instead of red).
+            bool toLinear = QualitySettings.activeColorSpace == ColorSpace.Linear;
             for (int i = 0; i < count; i++)
             {
                 dataArray[i].position = positions[i];
 
                 Color c = (colors != null && i < colors.Count) ? colors[i] : Color.white;
+                if (toLinear) c = new Color(Mathf.GammaToLinearSpace(c.r), Mathf.GammaToLinearSpace(c.g), Mathf.GammaToLinearSpace(c.b), c.a);
                 dataArray[i].color = new Vector4(c.r, c.g, c.b, c.a);
 
                 // Per-point size (mapped size mode) when given, otherwise the uniform slider size.

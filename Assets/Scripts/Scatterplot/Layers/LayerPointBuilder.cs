@@ -26,21 +26,33 @@ namespace DataViz
         const float k_MaxDiscreteTimeSteps = 1000f;
         const float k_WholeNumberEpsilon = 1e-3f;
 
-        // Light colours only: the studio is dark (PF-02), so dark blues and purples disappeared
-        // against it. Same hue order as before (red, blue, green, yellow, cyan, magenta, ...).
+        // Saturated and bright: the studio is dark (PF-02), and the earlier pastel set looked grey
+        // and alike there. Hues are spread so neighbours in the list differ most; same hue order as
+        // before (red, blue, green, yellow, cyan, magenta, ...). Checked in PointColourSelfTests.
         static readonly Color[] k_CategoricalPalette =
         {
-            new Color(1f, 0.38f, 0.33f), new Color(0.38f, 0.62f, 1f), new Color(0.35f, 0.9f, 0.42f),
-            new Color(1f, 0.9f, 0.3f), new Color(0.35f, 0.95f, 0.95f), new Color(1f, 0.45f, 0.9f),
-            new Color(1f, 0.62f, 0.2f), new Color(0.78f, 0.62f, 1f), new Color(0.45f, 0.85f, 0.75f),
-            new Color(1f, 0.65f, 0.68f), new Color(0.75f, 1f, 0.42f), new Color(0.6f, 0.82f, 1f)
+            new Color(1f, 0.25f, 0.25f),   // red
+            new Color(0.2f, 0.55f, 1f),    // blue
+            new Color(0.2f, 0.9f, 0.3f),   // green
+            new Color(1f, 0.88f, 0.1f),    // yellow
+            new Color(0f, 0.9f, 1f),       // cyan
+            new Color(1f, 0.25f, 0.9f),    // magenta
+            new Color(1f, 0.55f, 0.05f),   // orange
+            new Color(0.62f, 0.42f, 1f),   // violet
+            new Color(0.95f, 0.95f, 0.95f),// white
+            new Color(1f, 0.55f, 0.7f),    // pink
+            new Color(0.72f, 1f, 0.2f),    // lime
+            new Color(0.82f, 0.62f, 0.38f) // tan
         };
 
-        // Numeric colour scale for a dark background: light blue (low) through near-white to light red
-        // (high). The old Color.Lerp(blue, red) went through dark purple, which vanished on black.
-        static readonly Color k_NumericLow = new Color(0.35f, 0.62f, 1f);
-        static readonly Color k_NumericMid = new Color(0.94f, 0.94f, 0.94f);
-        static readonly Color k_NumericHigh = new Color(1f, 0.38f, 0.3f);
+        /// <summary>The colours of a categorical colour column, in category order (repeats after the last).</summary>
+        public static System.Collections.Generic.IReadOnlyList<Color> CategoricalPalette => k_CategoricalPalette;
+
+        // Numeric colour scale for a dark background: blue (low) through near-white to red (high),
+        // saturated at the ends. The old Color.Lerp(blue, red) went through dark purple, which vanished on black.
+        static readonly Color k_NumericLow = new Color(0.15f, 0.5f, 1f);
+        static readonly Color k_NumericMid = new Color(0.92f, 0.92f, 0.92f);
+        static readonly Color k_NumericHigh = new Color(1f, 0.2f, 0.15f);
 
         /// <summary>Colour for a value normalised to 0..1 on a numeric colour column.</summary>
         public static Color NumericColour(float norm)

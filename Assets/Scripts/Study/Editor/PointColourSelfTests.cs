@@ -27,5 +27,26 @@ namespace DataViz.Study
             t.True("clamped below 0", LayerPointBuilder.NumericColour(-1f) == low);
             t.True("clamped above 1", LayerPointBuilder.NumericColour(2f) == high);
         }
+
+        [SelfTest("Category colours are bright, saturated and distinct")]
+        static void CategoryColoursAreDistinct(SelfTestTally t)
+        {
+            var palette = LayerPointBuilder.CategoricalPalette;
+            t.Eq("twelve colours", 12, palette.Count);
+            for (int i = 0; i < palette.Count; i++)
+            {
+                Color c = palette[i];
+                t.True($"category {i} luminance >= {k_MinLuminance}", Luminance(c) >= k_MinLuminance);
+                // All but the white entry are clearly coloured, not greyish.
+                float chroma = Mathf.Max(c.r, Mathf.Max(c.g, c.b)) - Mathf.Min(c.r, Mathf.Min(c.g, c.b));
+                if (i != 8) t.True($"category {i} saturated", chroma >= 0.4f);
+                for (int j = 0; j < i; j++)
+                {
+                    Color d = palette[j];
+                    float distance = Mathf.Sqrt((c.r - d.r) * (c.r - d.r) + (c.g - d.g) * (c.g - d.g) + (c.b - d.b) * (c.b - d.b));
+                    t.True($"categories {j} and {i} differ", distance >= 0.3f);
+                }
+            }
+        }
     }
 }

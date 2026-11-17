@@ -238,9 +238,13 @@ namespace DataViz.Study
             t.True("sky dark", Luma(DarkStudio.SkyZenith) < 0.05f && Luma(DarkStudio.SkyHorizon) < 0.1f);
             t.True("floor dark", Luma(DarkStudio.FloorBase) < 0.1f);
             t.True("table dark", Luma(DarkStudio.TableTop) < 0.2f);
-            t.True("grid lighter than floor", Luma(DarkStudio.FloorMinor) > Luma(DarkStudio.FloorBase) + 0.15f &&
-                Luma(DarkStudio.FloorMajor) > Luma(DarkStudio.FloorMinor));
-            t.True("depth cues light", Luma(DarkStudio.Ring) > 0.8f && Luma(DarkStudio.Post) > 0.8f && Luma(DarkStudio.Footprint) > 0.75f);
+            // 17 Nov 2026: the floor grid and the distance rings disturbed exploration; they now
+            // take the horizon colour (invisible) and the ring labels/posts are hidden.
+            t.True("grid and rings blend into the floor", DarkStudio.FloorMinor == DarkStudio.FloorHorizon &&
+                DarkStudio.FloorMajor == DarkStudio.FloorHorizon && DarkStudio.Ring == DarkStudio.FloorHorizon &&
+                Mathf.Abs(Luma(DarkStudio.FloorHorizon) - Luma(DarkStudio.FloorBase)) < 0.02f);
+            t.True("scale markers hidden", !DarkStudio.ShowScaleMarkers);
+            t.True("plot footprint light", Luma(DarkStudio.Footprint) > 0.75f);
         }
         // ------------------------------------------------------------------ PF-03
 

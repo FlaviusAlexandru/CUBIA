@@ -76,7 +76,20 @@ namespace DataViz.MenuUI
         {
             foreach (MenuTabBar bar in Object.FindObjectsByType<MenuTabBar>(FindObjectsInactive.Include))
             {
-                if (bar == null || bar.transform.Find(k_TileName) != null || bar.m_Tabs.Count == 0)
+                if (bar == null || bar.m_Tabs.Count == 0)
+                    continue;
+                try
+                {
+                    // Axis controls on the Map tab (spec "axis scales and real proportions"); idempotent.
+                    foreach (MenuTab t in bar.m_Tabs)
+                        if (t != null && t.m_Id == "Map" && t.m_Panel != null)
+                            AxesPanel.Attach(t.m_Panel);
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogException(e);
+                }
+                if (bar.transform.Find(k_TileName) != null)
                     continue;
                 try
                 {

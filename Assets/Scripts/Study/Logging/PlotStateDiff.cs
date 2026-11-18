@@ -59,7 +59,8 @@ namespace DataViz.Study
                    !Same(a.GlyphLabels, b.GlyphLabels) || !Same(a.GlyphIndices, b.GlyphIndices) ||
                    !Same(a.RangeGlyphs, b.RangeGlyphs) || !Same(a.RangeMins, b.RangeMins) || !Same(a.RangeMaxs, b.RangeMaxs) ||
                    a.IsPlaying != b.IsPlaying ||
-                   Math.Abs(a.PlaybackRate - b.PlaybackRate) > 1e-4f;
+                   Math.Abs(a.PlaybackRate - b.PlaybackRate) > 1e-4f ||
+                   !AxesOf(a).SameAs(AxesOf(b));
         }
 
         /// <summary>One entry per named change; empty when nothing relevant changed. Compares the two active layers and playback.</summary>
@@ -111,6 +112,48 @@ namespace DataViz.Study
 
             if (before.IsPlaying != after.IsPlaying)
                 result.Add(after.IsPlaying ? (StudyActions.Play, "", "") : (StudyActions.Pause, "", ""));
+
+            DescribeAxes(result, AxesOf(before), AxesOf(after));
+        }
+
+        static AxisSettings AxesOf(PlotSnapshot s) => s?.Axes ?? AxisSettings.CreateDefault();
+
+        /// <summary>
+        /// Axis-setting rows (ASR-13), plot-level: SetAxisAspect ("Proportional" / "Fit each axis"),
+        /// SetAxisGroup ("X Y Z" -> "X Y"), SetAxisPadding ("5 %"), then per axis SetAxisRange
+        /// ("X: Auto" -> "X: Limits 0..6") and SetAxisReverse ("X: False" -> "X: True"). A change
+        /// to every field at once back to the defaults is one ResetAxes row.
+        /// </summary>
+        public static void DescribeAxes(List<(string, string, string)> result, AxisSettings before, AxisSettings after)
+        {
+            if (before.SameAs(after))
+                return;
+
+            int changed = 0;
+            var rows = new List<(string, string, string)>();
+            if (before.Aspect != after.Aspect)
+                rows.Add((StudyActions.SetAxisAspect, AxisSettings.AspectText(before.AspectMode), AxisSettings.AspectText(after.AspectMode)));
+            if (before.GroupMask != after.GroupMask)
+                rows.Add((StudyActions.SetAxisGroup, AxisSettings.MaskText(before.GroupMask), AxisSettings.MaskText(after.GroupMask)));
+            if (!before.Padding.Equals(after.Padding))
+                rows.Add((StudyActions.SetAxisPadding, AxisSettings.PaddingText(before.Padding), AxisSettings.PaddingText(after.Padding)));
+            for (int axis = 0; axis < 3; axis++)
+            {
+                string was = before.RangeText(axis), now = after.RangeText(axis);
+                if (was != now)
+                    rows.Add((StudyActions.SetAxisRange, was, now));
+                if (before.Reversed(axis) != after.Reversed(axis))
+                    rows.Add((StudyActions.SetAxisReverse, AxisSettings.AxisName(axis) + ": " + BoolText(before.Reversed(axis)),
+                        AxisSettings.AxisName(axis) + ": " + BoolText(after.Reversed(axis))));
+            }
+            changed = rows.Count;
+
+            if (changed > 1 && after.SameAs(AxisSettings.CreateDefault()))
+            {
+                result.Add((StudyActions.ResetAxes, "", ""));
+                return;
+            }
+            result.AddRange(rows);
         }
 
         // ---- layer stacks -------------------------------------------------------------------

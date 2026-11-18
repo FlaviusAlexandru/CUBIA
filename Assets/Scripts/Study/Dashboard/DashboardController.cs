@@ -80,6 +80,8 @@ namespace DataViz.Study
         Button m_ResetPosition, m_Undo, m_Redo;
         // Layers (LFR-26), built in code
         DashboardLayersSection m_Layers;
+        // Axis settings (spec "axis scales and real proportions"), built in code, right above Layers
+        DashboardAxesSection m_AxesSection;
         ScatterplotVisualizer m_Visualizer;
         readonly Dictionary<string, string> m_ToastedWarnings = new(); // layer id → warning last shown as a toast
         // Request log
@@ -282,6 +284,13 @@ namespace DataViz.Study
             }
             if (after != null) container.Insert(container.IndexOf(after) + 1, host);
             else container.Add(host);
+
+            // The Axes block sits right above Layers: both are about how the plot is drawn.
+            var axesHost = new VisualElement { name = "AxesSection" };
+            axesHost.AddToClassList("dash-section");
+            container.Insert(container.IndexOf(host), axesHost);
+            m_AxesSection = new DashboardAxesSection(axesHost, m_Manager, (action, oldValue, newValue, apply) => Facilitate(action, oldValue, newValue, apply));
+
             m_Layers = new DashboardLayersSection(host, m_Manager, FacilitateLayer);
         }
 
@@ -564,6 +573,7 @@ namespace DataViz.Study
         {
             if (!m_Initialised || m_Manager == null) return;
             m_Layers?.Refresh(true);
+            m_AxesSection?.Refresh(false); // a layer's mapping or Normalised may change the data ranges
         }
 
         void OnPlotMessage(string text, PlotMessageKind kind)
@@ -650,6 +660,7 @@ namespace DataViz.Study
                 m_GlyphRanges?.Sync(m);
                 m_FilterRanges?.Sync(m);
                 m_Layers?.Refresh(false); // cheap unless the stack changed
+                m_AxesSection?.Refresh(false); // cheap unless the axis settings or data ranges changed
             }
             finally
             {

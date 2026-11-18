@@ -14,7 +14,7 @@ namespace DataViz.MenuUI
     /// LayersMenuBootstrap. Left: the layer list (select, show/hide, reorder, duplicate, remove;
     /// paged) and the add buttons (dataset from the catalogue, subset of the active layer, computed
     /// layer on the active layer). Right: the active layer's own settings (rename on the VR
-    /// keyboard, Normalise, opacity, fixed colour, glyph, shuffle unlock, time behaviour, end-time
+    /// keyboard, Own scale (PlotLayer.Normalised), opacity, fixed colour, glyph, shuffle unlock, time behaviour, end-time
     /// and label columns, hide in source; computed parameters), or a picker list while one is open.
     ///
     /// Every control calls a manager request, so the change is forwarded, logged and synced like

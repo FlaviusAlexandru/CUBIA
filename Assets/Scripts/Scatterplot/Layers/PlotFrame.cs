@@ -13,8 +13,29 @@ namespace DataViz
     public struct AxisScale
     {
         public bool Mapped, Categorical;
-        public float Min, Max;
+        public float Min, Max;        // Min > Max = a reversed axis (AxisSettings Reverse); Normalise and ValueAt handle it
         public string[] Categories;   // categorical only: ordered union of the category tables
+
+        /// <summary>Limits (Drop) or Zoom: rows whose value lies outside ClipMin..ClipMax are not drawn (ASR-04).</summary>
+        public AxisClip Clip;
+        public float ClipMin, ClipMax;
+
+        /// <summary>True when this axis clips and value lies outside its clip range (numeric scales only).</summary>
+        public bool Outside(float value) =>
+            Clip != AxisClip.None && Mapped && !Categorical && (float.IsNaN(value) || value < ClipMin || value > ClipMax);
+
+        /// <summary>Like Normalise, but not clamped to 0..1 (for clipping lines at the cube walls).</summary>
+        public float Unit(float value)
+        {
+            if (!Mapped)
+                return 0f;
+            if (Categorical)
+                return NormaliseCategoryIndex((int)value);
+            float range = Max - Min;
+            if (Mathf.Abs(range) < 0.00001f)
+                return 0f;
+            return (value - Min) / range;
+        }
 
         public static AxisScale Numeric(float min, float max) => new AxisScale { Mapped = true, Min = min, Max = max };
 
@@ -59,7 +80,7 @@ namespace DataViz
             if (!Mapped)
                 return true;
             if (!Categorical)
-                return Min.Equals(o.Min) && Max.Equals(o.Max);
+                return Min.Equals(o.Min) && Max.Equals(o.Max) && Clip == o.Clip && ClipMin.Equals(o.ClipMin) && ClipMax.Equals(o.ClipMax);
             int n = Categories?.Length ?? 0;
             if (n != (o.Categories?.Length ?? 0))
                 return false;
@@ -94,6 +115,9 @@ namespace DataViz
     {
         public AxisScale X, Y, Z;
 
+        /// <summary>The axis settings these bounds were made with (AxisScaling.Apply), or null; own-scale layers read Padding and Reverse from it.</summary>
+        public AxisSettings Settings;
+
         public AxisScale Get(int axis) => axis == 0 ? X : axis == 1 ? Y : Z;
 
         public void Set(int axis, AxisScale scale)
@@ -114,6 +138,7 @@ namespace DataViz
         public int Drawn;                   // points put in the buffer
         public int SkippedNoAxisValue;      // LFR-11
         public int SkippedNoEncodingValue;  // LFR-11 (colour or mapped size cell empty)
+        public int SkippedOutOfRange;       // ASR-04: outside an axis set to Limits or Zoom
         public int Stride;                  // 1 = every drawable row; n = 1 of every n (LFR-06)
         public string Warning;
     }

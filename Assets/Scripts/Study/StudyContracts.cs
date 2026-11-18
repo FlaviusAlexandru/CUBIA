@@ -110,6 +110,14 @@ namespace DataViz.Study
         public const string SaveView = "SaveView";         // LFR-33; NewValue = view name
         public const string LoadSavedView = "LoadSavedView"; // LFR-33; NewValue = view name (replaces the stack)
 
+        // Axis settings (spec "axis scales and real proportions", ASR-13); all plot-level.
+        public const string SetAxisAspect = "SetAxisAspect";   // "Proportional" / "Fit each axis"
+        public const string SetAxisRange = "SetAxisRange";     // "X: Auto" -> "X: Limits 0..6"
+        public const string SetAxisReverse = "SetAxisReverse"; // "X: False" -> "X: True"
+        public const string SetAxisGroup = "SetAxisGroup";     // proportional group, "X Y Z" -> "X Y"
+        public const string SetAxisPadding = "SetAxisPadding"; // "5 %" -> "0 %"
+        public const string ResetAxes = "ResetAxes";
+
         /// <summary>
         /// True for actions about the whole plot or the session, whose rows leave the Layer column
         /// empty: Play, Pause, Scrub, SetPlaybackRate, Tooltips, ResetPosition, LoadDataset (the
@@ -124,6 +132,7 @@ namespace DataViz.Study
                 case Play: case Pause: case Scrub: case SetPlaybackRate: case Tooltips: case ResetPosition:
                 case LoadDataset: case ApplyView: case Undo: case Redo: case Note: case Marker:
                 case SessionStart: case SessionStop: case Shuffle:
+                case SetAxisAspect: case SetAxisRange: case SetAxisReverse: case SetAxisGroup: case SetAxisPadding: case ResetAxes:
                     return true;
                 default:
                     return false;

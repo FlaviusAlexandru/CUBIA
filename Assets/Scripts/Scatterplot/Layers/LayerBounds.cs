@@ -136,7 +136,7 @@ namespace DataViz
                         ? ColumnRange.GetOverRows(ds, columnIndex, members, out lo, out hi)
                         : ColumnRange.Get(ds, columnIndex, out lo, out hi);
                     if (ok)
-                        frame.Set(axis, AxisScale.Numeric(lo, hi));
+                        frame.Set(axis, AxisScaling.OwnScale(lo, hi, axis, shared.Settings)); // ASR-05: padding and Reverse
                 }
             }
             return frame;
@@ -160,7 +160,7 @@ namespace DataViz
         /// <summary>
         /// LFR-07 axis title, one string per line. When every visible point layer that maps a column
         /// there maps the same column name and none is Normalised: one line, the column name. Otherwise
-        /// one line per such layer, "Layer name: column", with " (normalised)" where it applies.
+        /// one line per such layer, "Layer name: column", with " (own scale)" where it applies.
         /// Empty when no visible layer maps the axis.
         /// </summary>
         public static List<string> AxisTitleLines(IReadOnlyList<PlotLayer> layers, int axis)
@@ -199,7 +199,7 @@ namespace DataViz
             }
 
             foreach (var c in contributing)
-                lines.Add(c.layer.Name + ": " + c.column + (c.layer.Normalised ? " (normalised)" : ""));
+                lines.Add(c.layer.Name + ": " + c.column + (c.layer.Normalised ? " (own scale)" : ""));
             return lines;
         }
     }

@@ -136,6 +136,7 @@ namespace DataViz
             bool dimByFilter = !layer.FiltersExclude && ownFilters.Count > 0;
             List<List<LayerRows.ResolvedFilter>> hiders = HidingSubsets(layer, stack, dataset);
             int[] axisColumns = LayerRows.MappedAxes(layer, dataset);
+            bool anyClip = axes.X.Clip != AxisClip.None || axes.Y.Clip != AxisClip.None || axes.Z.Clip != AxisClip.None;
 
             // Skip counts per column (index into the dataset's columns), for the warning text.
             int[] skippedPerColumn = null;
@@ -165,6 +166,11 @@ namespace DataViz
                 {
                     info.SkippedNoEncodingValue++;
                     CountSkip(ref skippedPerColumn, dataset.ColumnCount, sizeCol);
+                    continue;
+                }
+                if (anyClip && OutsideAxes(dataset, i, axes, xCol, yCol, zCol))
+                {
+                    info.SkippedOutOfRange++; // ASR-04: Limits / Zoom hide rows outside, never clamp them onto a wall
                     continue;
                 }
                 rows.Add(i);
@@ -248,7 +254,7 @@ namespace DataViz
             }
 
             info.Drawn = drawn;
-            info.Warning = BuildWarning(layer, dataset, skippedPerColumn, budgetWarning,
+            info.Warning = BuildWarning(layer, dataset, skippedPerColumn, OutOfRangeWarning(layer, info.SkippedOutOfRange), budgetWarning,
                 stride > 1 ? $"{layer.Name}: showing 1 of every {stride} points ({drawn} of {drawable}) to stay within the point budget ({budgetLeft} left)" : null);
             rows.Clear();
             return info;
@@ -442,6 +448,20 @@ namespace DataViz
             return remap;
         }
 
+        /// <summary>True when a numeric axis set to Limits or Zoom puts this row outside its clip range (ASR-04).</summary>
+        public static bool OutsideAxes(DatasetColumnar dataset, int row, in AxisFrame axes, int xCol, int yCol, int zCol)
+        {
+            return Outside(dataset, row, xCol, axes.X) || Outside(dataset, row, yCol, axes.Y) || Outside(dataset, row, zCol, axes.Z);
+        }
+
+        static bool Outside(DatasetColumnar dataset, int row, int column, AxisScale scale) =>
+            scale.Clip != AxisClip.None && scale.Mapped && !scale.Categorical && column >= 0 &&
+            scale.Outside(dataset.GetNumericValue(row, column));
+
+        static string OutOfRangeWarning(PlotLayer layer, int n) =>
+            n <= 0 ? null : string.Format(CultureInfo.InvariantCulture, "{0}: {1} row{2} outside the axis limits {3} not drawn",
+                layer.Name, n, n == 1 ? "" : "s", n == 1 ? "is" : "are");
+
         static int FirstMissing(DatasetColumnar dataset, int row, int[] columns)
         {
             for (int c = 0; c < columns.Length; c++)
@@ -488,7 +508,7 @@ namespace DataViz
         }
 
         // One sentence per reason, one per line: skipped rows per column (LFR-11), then the budget (LFR-06).
-        static string BuildWarning(PlotLayer layer, DatasetColumnar dataset, int[] skippedPerColumn, string budgetUsedUp, string budgetStride)
+        static string BuildWarning(PlotLayer layer, DatasetColumnar dataset, int[] skippedPerColumn, string outOfRange, string budgetUsedUp, string budgetStride)
         {
             List<string> lines = null;
             if (skippedPerColumn != null)
@@ -503,6 +523,8 @@ namespace DataViz
                         layer.Name, n, n == 1 ? " has" : "s have", dataset.Columns[c].Name, n == 1 ? "is" : "are"));
                 }
             }
+            if (outOfRange != null)
+                (lines ??= new List<string>()).Add(outOfRange);
             if (budgetUsedUp != null)
                 (lines ??= new List<string>()).Add(budgetUsedUp);
             if (budgetStride != null)
@@ -626,6 +648,7 @@ namespace DataViz
             AddScale(ref h, frame.Bounds.X);
             AddScale(ref h, frame.Bounds.Y);
             AddScale(ref h, frame.Bounds.Z);
+            h.Add(frame.Bounds.Settings?.Hash() ?? 0); // own-scale layers take padding and Reverse from it
             h.Add(settings.Origin);
             h.Add(settings.AxisLength);
             h.Add(settings.FilteredOutAlpha);
@@ -708,6 +731,9 @@ namespace DataViz
             h.Add(s.Categorical);
             h.Add(s.Min);
             h.Add(s.Max);
+            h.Add(s.Clip);
+            h.Add(s.ClipMin);
+            h.Add(s.ClipMax);
             h.Add(s.Categories != null ? RuntimeHelpers.GetHashCode(s.Categories) : 0);
             h.Add(s.Categories?.Length ?? 0);
         }

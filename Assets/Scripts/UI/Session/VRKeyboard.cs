@@ -21,7 +21,8 @@ namespace DataViz.Networking
     /// </summary>
     public class VRKeyboard : MonoBehaviour
     {
-        public enum Layout { Text, JoinCode }
+        /// <summary>Number: digits, minus, decimal point and space (as a separator, e.g. "0 6" for limits); letter keys are hidden.</summary>
+        public enum Layout { Text, JoinCode, Number }
 
         [Serializable]
         public class Key
@@ -247,6 +248,13 @@ namespace DataViz.Networking
                 if (!IsCodeChar(c))
                     return false;
             }
+            else if (m_Layout == Layout.Number)
+            {
+                if (c == ' ' && (m_Text.Length == 0 || m_Text[m_Text.Length - 1] == ' '))
+                    return false;
+                if (!(char.IsDigit(c) || c == '-' || c == '.' || c == ' '))
+                    return false;
+            }
             else
             {
                 if (char.IsControl(c))
@@ -311,12 +319,16 @@ namespace DataViz.Networking
                     RowOf(key.Button).SetActive(!code);
 
                 char c = key.Value[0];
+                if (key.Value.Length == 1 && char.IsLetter(c))
+                    RowOf(key.Button).SetActive(m_Layout != Layout.Number);
+                if (key.Value == "-" || key.Value == ".")
+                    RowOf(key.Button).SetActive(!code); // they share the bottom row with the recent codes
                 if (key.Label != null && key.Value.Length == 1 && char.IsLetter(c))
                     key.Label.text = (code || m_Shift ? char.ToUpperInvariant(c) : char.ToLowerInvariant(c)).ToString();
             }
 
             if (m_ShiftButton != null)
-                RowOf(m_ShiftButton).SetActive(!code);
+                RowOf(m_ShiftButton).SetActive(m_Layout == Layout.Text);
             if (m_ShiftLabel != null)
                 m_ShiftLabel.text = m_Shift ? "ABC" : "abc";
 

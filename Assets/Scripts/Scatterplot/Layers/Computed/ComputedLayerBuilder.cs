@@ -64,6 +64,16 @@ namespace DataViz
 
             var rows = new List<int>();
             LayerRows.FilterPassing(rowLayer, stack, rows);
+
+            // ASR-04: an axis on Limits (R scale limits) drops the rows outside before the maths;
+            // Zoom (R coord_cartesian) keeps them. Either way the result is clipped at the walls.
+            bool clips = frame.X.Clip != AxisClip.None || frame.Y.Clip != AxisClip.None || frame.Z.Clip != AxisClip.None;
+            if (clips)
+            {
+                int xc = rowLayer.XColumnIndex, yc = rowLayer.YColumnIndex, zc = rowLayer.ZColumnIndex;
+                AxisFrame f = frame;
+                rows.RemoveAll(r => Dropped(ds, r, xc, f.X) || Dropped(ds, r, yc, f.Y) || Dropped(ds, r, zc, f.Z));
+            }
             List<Vector3> points = Points(rowLayer, ds, frame, rows);
 
             switch (computed.ComputedKind)
@@ -86,7 +96,13 @@ namespace DataViz
             }
 
             status = Join(missing ? StatusSourceMissing : "", shape.Valid ? "" : StatusNotEnoughPoints);
-            return ToCube(shape, frame);
+            if (!clips)
+                return ToCube(shape, frame);
+
+            ComputedShape clipped = ClipToCube(shape, frame);
+            if (shape.Valid && !clipped.Valid)
+                status = Join(missing ? StatusSourceMissing : "", StatusOutsideRange);
+            return clipped;
         }
 
         /// <summary>
@@ -125,6 +141,9 @@ namespace DataViz
                 h.Add(s.Categorical);
                 h.Add(s.Min);
                 h.Add(s.Max);
+                h.Add(s.Clip);
+                h.Add(s.ClipMin);
+                h.Add(s.ClipMax);
                 if (s.Categories != null)
                 {
                     h.Add(s.Categories.Length);
@@ -132,6 +151,7 @@ namespace DataViz
                         h.Add(c);
                 }
             }
+            h.Add(bounds.Settings?.Hash() ?? 0); // own-scale sources take padding and Reverse from it
             return h.ToHashCode();
         }
 
@@ -297,6 +317,149 @@ namespace DataViz
                     unit[axis] = Mathf.Clamp01(p[axis] / (n - 1));
             }
             return unit;
+        }
+
+        static bool Dropped(DatasetColumnar ds, int row, int column, AxisScale scale) =>
+            scale.Clip == AxisClip.Drop && column >= 0 && scale.Mapped && !scale.Categorical && scale.Outside(ds.GetNumericValue(row, column));
+
+        // Data space -> unit cube without clamping numeric axes (categorical as in ToCube).
+        static Vector3 UnitOf(AxisFrame frame, Vector3 p)
+        {
+            var unit = new Vector3();
+            for (int axis = 0; axis < 3; axis++)
+            {
+                AxisScale s = frame.Get(axis);
+                int n = s.Categories?.Length ?? 0;
+                if (!s.Mapped)
+                    unit[axis] = 0f;
+                else if (s.Categorical)
+                    unit[axis] = n > 1 ? Mathf.Clamp01(p[axis] / (n - 1)) : s.Normalise(p[axis]);
+                else
+                    unit[axis] = s.Unit(p[axis]);
+            }
+            return unit;
+        }
+
+        const float k_Eps = 1e-5f;
+
+        static bool InCube(Vector3 u) =>
+            u.x >= -k_Eps && u.x <= 1f + k_Eps && u.y >= -k_Eps && u.y <= 1f + k_Eps && u.z >= -k_Eps && u.z <= 1f + k_Eps;
+
+        /// <summary>
+        /// ASR-04: the shape in the unit cube, cut at the walls instead of clamped onto them. A marker
+        /// outside is dropped (Valid false). A line leaving and re-entering the cube becomes several
+        /// pieces (Runs); Polyline is the longest. Nothing inside: Valid false.
+        /// </summary>
+        public static ComputedShape ClipToCube(ComputedShape shape, AxisFrame frame)
+        {
+            if (!shape.Valid)
+                return shape;
+            if (shape.IsMarker)
+            {
+                Vector3 m = UnitOf(frame, shape.Marker);
+                if (!InCube(m))
+                    return default;
+                shape.Marker = m;
+                return shape;
+            }
+
+            Vector3[] line = shape.Polyline ?? Array.Empty<Vector3>();
+            var units = new Vector3[line.Length];
+            for (int i = 0; i < line.Length; i++)
+                units[i] = UnitOf(frame, line[i]);
+
+            var runs = new List<List<Vector3>>();
+            List<Vector3> current = null;
+            if (units.Length == 1 && InCube(units[0]))
+                runs.Add(new List<Vector3> { units[0] });
+
+            int segments = units.Length - 1 + (shape.Closed && units.Length > 2 ? 1 : 0);
+            for (int i = 0; i < segments; i++)
+            {
+                Vector3 a = units[i], b = units[(i + 1) % units.Length];
+                if (!ClipSegment(ref a, ref b, out bool startCut, out bool endCut))
+                {
+                    current = null;
+                    continue;
+                }
+                if (current == null || startCut)
+                {
+                    current = new List<Vector3> { a };
+                    runs.Add(current);
+                }
+                current.Add(b);
+                if (endCut)
+                    current = null;
+            }
+
+            if (runs.Count == 0)
+                return default;
+
+            // A closed shape that stayed whole keeps its loop; otherwise it is open pieces.
+            bool whole = runs.Count == 1 && runs[0].Count == units.Length + (shape.Closed && units.Length > 2 ? 1 : 0);
+            List<Vector3> longest = runs[0];
+            foreach (List<Vector3> r in runs)
+                if (r.Count > longest.Count)
+                    longest = r;
+
+            if (whole && shape.Closed)
+            {
+                longest.RemoveAt(longest.Count - 1); // the closing vertex repeats the first
+                shape.Polyline = longest.ToArray();
+                shape.Runs = null;
+                return shape;
+            }
+
+            shape.Closed = false;
+            shape.Polyline = longest.ToArray();
+            if (runs.Count > 1)
+            {
+                shape.Runs = new Vector3[runs.Count][];
+                for (int i = 0; i < runs.Count; i++)
+                    shape.Runs[i] = runs[i].ToArray();
+            }
+            else
+            {
+                shape.Runs = null;
+            }
+            return shape;
+        }
+
+        // Liang-Barsky against the unit cube. startCut / endCut: that end was moved onto a wall.
+        static bool ClipSegment(ref Vector3 a, ref Vector3 b, out bool startCut, out bool endCut)
+        {
+            startCut = endCut = false;
+            float t0 = 0f, t1 = 1f;
+            Vector3 d = b - a;
+            for (int axis = 0; axis < 3; axis++)
+            {
+                if (!Edge(-d[axis], a[axis] - 0f, ref t0, ref t1)) return false;
+                if (!Edge(d[axis], 1f - a[axis], ref t0, ref t1)) return false;
+            }
+            Vector3 na = a + d * t0, nb = a + d * t1;
+            startCut = t0 > 0f;
+            endCut = t1 < 1f;
+            a = na;
+            b = nb;
+            return true;
+        }
+
+        static bool Edge(float p, float q, ref float t0, ref float t1)
+        {
+            if (Mathf.Abs(p) < 1e-12f)
+                return q >= -k_Eps;
+            float r = q / p;
+            if (p < 0f)
+            {
+                if (r > t1) return false;
+                if (r > t0) t0 = r;
+            }
+            else
+            {
+                if (r < t0) return false;
+                if (r < t1) t1 = r;
+            }
+            return true;
         }
 
         static string Join(string first, string second) =>

@@ -270,6 +270,9 @@ namespace DataViz.Networking
         public float TimeScrub;
         public double ScrubServerTime;
 
+        /// <summary>The plot's axis settings (spec "axis scales and real proportions"). A snapshot built by hand gets a new plot's defaults.</summary>
+        public AxisSettings Axes = AxisSettings.CreateDefault();
+
         /// <summary>The layer with ActiveLayerId, else Layers[0], else null.</summary>
         public LayerSnapshot ActiveLayer
         {
@@ -342,6 +345,7 @@ namespace DataViz.Networking
                 PlaybackRate = m.PlaybackRate,
                 ScrubPerSecond = m.EffectiveScrubPerSecond(),
                 TimeScrub = m.TimeScrub,
+                Axes = m.Axes.Clone(),
             };
             s.HasTimeColumn = s.Layers.Any(l => l.TimeColumn >= 0);
             s.SetBounds(m.SharedBounds);
@@ -382,6 +386,7 @@ namespace DataViz.Networking
             }
 
             m.Stack.Restore(layers, ActiveLayerId, NextLayerNumber);
+            m.RestoreAxes(Axes);
 
             m.IsPlaying = IsPlaying;
             m.PlaybackSpeed = PlaybackSpeed;
@@ -449,6 +454,7 @@ namespace DataViz.Networking
                    Published == o.Published &&
                    BoundsValid == o.BoundsValid && BoundsMin == o.BoundsMin && BoundsMax == o.BoundsMax &&
                    HasTimeColumn == o.HasTimeColumn &&
+                   (Axes ?? AxisSettings.CreateDefault()).SameAs(o.Axes ?? AxisSettings.CreateDefault()) &&
                    IsPlaying == o.IsPlaying && PlaybackSpeed == o.PlaybackSpeed &&
                    PlaybackRate == o.PlaybackRate && ScrubPerSecond == o.ScrubPerSecond;
         }
@@ -476,6 +482,8 @@ namespace DataViz.Networking
             s.SerializeValue(ref ScrubPerSecond);
             s.SerializeValue(ref TimeScrub);
             s.SerializeValue(ref ScrubServerTime);
+            Axes ??= AxisSettings.CreateDefault();
+            Axes.NetworkSerialize(s);
 
             int count = Layers?.Length ?? 0;
             s.SerializeValue(ref count);
@@ -534,6 +542,13 @@ namespace DataViz.Networking
         SetComputedAxis,        // Int
         SetComputedColumn,      // Int
         SetLayerPointSize,      // Float (appended for PF-01)
+        // Axis settings (appended; plot-level, PlotRequest.Layer unused)
+        SetAxisAspect,          // Int = (int)AxisAspect
+        SetAxisRange,           // Int = axis, Float = (float)AxisRangeMode, RangeMins[0] / RangeMaxs[0] = limits
+        SetAxisReverse,         // Int = axis, Bool
+        SetAxisGroup,           // Int = axis, Bool
+        SetAxisPadding,         // Float
+        ResetAxes,
     }
 
     /// <summary>

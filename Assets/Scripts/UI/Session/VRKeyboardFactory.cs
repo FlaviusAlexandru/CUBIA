@@ -26,7 +26,8 @@ namespace DataViz.Networking
             kb.m_PromptText = PanelKit.Label(root, "Prompt", "", 0f, 0f, Width, 34f, theme.BodyFontSize, theme.TextMuted);
             PanelKit.Panel(root, "EntryBackground", 0f, -40f, Width, 56f, new Color(1f, 1f, 1f, 0.9f), theme.PanelOutline, 14f)
                 .raycastTarget = false;
-            kb.m_EntryText = PanelKit.Label(root, "Entry", "", 18f, -40f, Width - 36f, 56f, 32f, theme.Text);
+            // Dark text: the entry field stays white whatever the menu theme (theme.Text is near-white on the dark menus).
+            kb.m_EntryText = PanelKit.Label(root, "Entry", "", 18f, -40f, Width - 36f, 56f, 32f, new Color(0.08f, 0.09f, 0.11f, 1f));
 
             const float step = 92f, keyW = 84f, keyH = 50f, top = -110f, rowStep = 58f;
             string[] rows = { "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
@@ -67,6 +68,14 @@ namespace DataViz.Networking
                 TMP_Text label = PanelKit.Label(b.transform, "Label", "", 0f, 0f, 128f, keyH, 20f, theme.Accent, TextAlignmentOptions.Center);
                 kb.m_SuggestionButtons.Add(b);
                 kb.m_SuggestionLabels.Add(label);
+            }
+
+            // Minus and decimal point (names and numbers), on the bottom row; hidden with the join-code layout, which uses that row for recent codes.
+            foreach ((string label, float x) in new[] { ("-", 0f), (".", step) })
+            {
+                Button key = PanelKit.Button(root, "Key_" + (label == "-" ? "Minus" : "Point"), label, null, x, bottom, keyW, keyH,
+                    PanelKit.Style.Secondary, 24f);
+                kb.m_Keys.Add(new VRKeyboard.Key { Button = key, Label = PanelKit.LabelOf(key), Value = label });
             }
 
             kb.m_CancelButton = PanelKit.Button(root, "Cancel", "Cancel", null, Width - 290f, bottom, 140f, keyH, PanelKit.Style.Secondary);

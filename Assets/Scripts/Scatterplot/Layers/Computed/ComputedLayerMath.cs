@@ -17,6 +17,12 @@ namespace DataViz
         public bool Closed;
         public bool IsMarker;
         public Vector3 Marker;
+
+        /// <summary>
+        /// Set only when clipping at the cube walls (axis Limits / Zoom, ASR-04) split the line into
+        /// several pieces: every piece, in order. Polyline is then the longest piece.
+        /// </summary>
+        public Vector3[][] Runs;
     }
 
     /// <summary>

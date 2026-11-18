@@ -147,8 +147,9 @@ namespace DataViz.Study
             m_Name.RegisterValueChangedCallback(evt => { if (!m_Updating) Rename(evt.newValue); });
             m_Props.Add(m_Name);
 
-            m_Normalised = ToggleOf("Normalise (own scale)", v => Set(StudyActions.SetLayerNormalised, l => l.Normalised, v,
+            m_Normalised = ToggleOf("Own scale", v => Set(StudyActions.SetLayerNormalised, l => l.Normalised, v,
                 (id, b) => m_Manager.RequestSetLayerNormalisedRpc(id, b)));
+            m_Normalised.tooltip = "Draw this layer on its own range instead of the shared axes (like R facets with free scales). Padding and Reverse still apply.";
             m_Props.Add(m_Normalised);
 
             m_Opacity = DropdownOf("Opacity", OnOpacity);
@@ -367,7 +368,7 @@ namespace DataViz.Study
         {
             string kind = layer.Kind == LayerKind.Computed ? LayerRules.ComputedKindName(layer.ComputedKind) : layer.Kind.ToString();
             string text = $"{layer.Name}  [{kind}]";
-            if (layer.Normalised) text += " · Normalised";
+            if (layer.Normalised) text += " · Own scale";
             if (layer.LocalUnavailable) text += " · not on this device";
             if (layer.Kind == LayerKind.Computed && ComputedLayerBuilder.IsSourceMissing(layer, m_Manager.Stack)) text += " · source missing";
             return text;

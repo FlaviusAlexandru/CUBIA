@@ -60,7 +60,7 @@ namespace DataViz.Study
             t.Eq("one: point", true, p.IsPoint);
             t.Eq("one: id", a.Id, p.LayerId);
             t.Eq("one: title", "Editing: wp5_a", p.Title);
-            t.Eq("one: normalise off", "Normalise: off", p.NormaliseText);
+            t.Eq("one: normalise off", "Own scale: off", p.NormaliseText);
             t.Eq("one: no hide in source", false, p.ShowHideInSource);
             t.Eq("one: opacity 100%", 0, p.OpacityStep);
             t.Eq("one: opacity text", "Opacity 100%", p.OpacityText);
@@ -113,7 +113,7 @@ namespace DataViz.Study
             t.Eq("two: second up", true, v.Rows[1].CanMoveUp);
             t.Eq("two: second not down", false, v.Rows[1].CanMoveDown);
             t.Eq("two: badge", "Editing: wp5_b", Model.BadgeText(stack));
-            t.Eq("two: normalise on", "Normalise: on", v.Props.NormaliseText);
+            t.Eq("two: normalise on", "Own scale: on", v.Props.NormaliseText);
             t.Eq("two: opacity step 50%", 2, v.Props.OpacityStep);
             t.Eq("two: shuffle switchable", true, v.Props.ShuffleEnabled);
             t.Eq("two: shuffle unlocked", "Shuffle: unlocked", v.Props.ShuffleText);

@@ -29,7 +29,7 @@ namespace DataViz.MenuUI
         /// </summary>
         public static readonly float[] PointSizePercentSteps = { 1f, 2f, 3f, 5f, 7f, 10f, 13f, 16f, 20f, 25f, 30f, 40f, 50f, 65f, 80f, 100f };
 
-        public const string TagNormalised = "Normalised";
+        public const string TagNormalised = "Own scale";
         public const string TagHidden = "hidden";
         public const string TagSourceMissing = "source missing";
         public const string TagUnavailable = "not on this device";
@@ -236,7 +236,7 @@ namespace DataViz.MenuUI
             if (p.IsPoint)
             {
                 p.NormaliseOn = layer.Normalised;
-                p.NormaliseText = layer.Normalised ? "Normalise: on" : "Normalise: off";
+                p.NormaliseText = layer.Normalised ? "Own scale: on" : "Own scale: off";
                 p.ShowHideInSource = p.IsSubset;
                 p.HideInSourceOn = layer.HiddenInSource;
                 p.HideInSourceText = layer.HiddenInSource ? "Hide in source: on" : "Hide in source: off";
@@ -265,7 +265,7 @@ namespace DataViz.MenuUI
             }
             else
             {
-                p.NormaliseText = "Normalise: as source";
+                p.NormaliseText = "Own scale: as source";
                 p.ShuffleText = "Shuffle: never";
                 p.LineWidthText = "Line " + (layer.LineWidth * 1000f).ToString("0.#", CultureInfo.InvariantCulture);
 
@@ -379,7 +379,7 @@ namespace DataViz.MenuUI
         {
             if (!scale.Mapped || scale.Categorical)
                 return 1f;
-            float step = (scale.Max - scale.Min) / 20f;
+            float step = Mathf.Abs(scale.Max - scale.Min) / 20f; // Max < Min on a reversed axis
             return float.IsFinite(step) && step > 1e-6f ? step : 1f;
         }
 

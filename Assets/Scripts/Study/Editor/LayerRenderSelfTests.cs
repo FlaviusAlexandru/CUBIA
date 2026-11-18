@@ -382,7 +382,7 @@ namespace DataViz.Study
 
             m.Normalised = true;
             bounds = LayerBounds.Compute(stack.Layers);
-            t.Eq("one line per layer", "movement: X\nmoles: X (normalised)\n" + $"[{0f:F1} to {10f:F1}]",
+            t.Eq("one line per layer", "movement: X\nmoles: X (own scale)\n" + $"[{0f:F1} to {10f:F1}]",
                 ScatterplotVisualizer.AxisTitle(stack.Layers, 0, bounds.X, out lines));
             t.Eq("per-layer line count", 3, lines);
 

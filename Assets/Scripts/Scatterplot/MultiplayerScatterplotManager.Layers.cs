@@ -229,20 +229,22 @@ namespace DataViz
         // ---- bounds and clock ----------------------------------------------------------------
 
         /// <summary>
-        /// The plot's shared axis bounds (LayerBounds.Compute over Layers), recomputed when a layer's
-        /// kind, dataset, X/Y/Z, Normalised or availability changed. SharedBoundsOverride wins when set.
+        /// The plot's shared axis bounds: LayerBounds.Compute over Layers, then AxisScaling.Apply with
+        /// Axes (spec ASR-03); recomputed when a layer's kind, dataset, X/Y/Z, Normalised or availability,
+        /// or the axis settings changed. SharedBoundsOverride (already final) wins when set.
         /// </summary>
         public AxisBounds SharedBounds
         {
             get
             {
                 if (SharedBoundsOverride is AxisBounds forced)
-                    return forced;
+                    return AxisScaling.MarkClips(forced, Axes);
 
                 int signature = BoundsSignature();
                 if (!m_BoundsCached || signature != m_BoundsSignature)
                 {
-                    m_Bounds = LayerBounds.Compute(Layers);
+                    m_DataBounds = LayerBounds.Compute(Layers);
+                    m_Bounds = AxisScaling.Apply(m_DataBounds, Axes, out m_FlattenedAxes);
                     m_BoundsSignature = signature;
                     m_BoundsCached = true;
                 }
@@ -273,6 +275,7 @@ namespace DataViz
         {
             var h = new HashCode();
             h.Add(ColumnRange.ValidRowsOnly);
+            h.Add(Axes.Hash());
             foreach (PlotLayer layer in Layers)
             {
                 h.Add(layer.Kind);

@@ -181,6 +181,24 @@ namespace DataViz
                 return;
             }
 
+            if (shape.Runs != null && shape.Runs.Length > 1)
+            {
+                // Cut at the cube walls into several pieces (axis Limits / Zoom, ASR-04).
+                SetLineCount(entry, layer, shape.Runs.Length);
+                for (int r = 0; r < shape.Runs.Length; r++)
+                {
+                    LineRenderer piece = entry.Lines[r];
+                    piece.loop = false;
+                    Vector3[] run = shape.Runs[r] ?? System.Array.Empty<Vector3>();
+                    var local = new Vector3[run.Length];
+                    for (int i = 0; i < run.Length; i++)
+                        local[i] = m_Visualizer.CubeToLocal(run[i]);
+                    piece.positionCount = local.Length;
+                    piece.SetPositions(local);
+                }
+                return;
+            }
+
             SetLineCount(entry, layer, 1);
             LineRenderer polyline = entry.Lines[0];
             polyline.loop = shape.Closed;

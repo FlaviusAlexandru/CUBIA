@@ -23,6 +23,10 @@ namespace DataViz.Flow
         public float PlaybackRate = 1f;
         public List<SavedLayer> Layers = new();
 
+        /// <summary>Axis settings (ASR-12). Views saved before the feature have HasAxes false and load with AxisSettings.CreateLegacy().</summary>
+        public bool HasAxes;
+        public AxisSettings Axes = AxisSettings.CreateLegacy();
+
         /// <summary>"P03_movement.cdataset + 2 more", for list entries.</summary>
         public string DatasetSummary
         {
@@ -187,6 +191,8 @@ namespace DataViz.Flow
                 NextLayerNumber = snapshot?.NextLayerNumber ?? 1,
                 TimeScrub = snapshot?.TimeScrub ?? 0f,
                 PlaybackRate = snapshot?.PlaybackRate ?? 1f,
+                HasAxes = snapshot != null,
+                Axes = (snapshot?.Axes ?? AxisSettings.CreateLegacy()).Clone(),
             };
             if (snapshot?.Layers == null) return view;
 
@@ -272,6 +278,7 @@ namespace DataViz.Flow
                 IsPlaying = false,
                 PlaybackRate = view.PlaybackRate > 0f ? view.PlaybackRate : 1f,
                 TimeScrub = Mathf.Clamp01(view.TimeScrub),
+                Axes = view.HasAxes && view.Axes != null ? view.Axes.Clone().Sanitised() : AxisSettings.CreateLegacy(),
             };
         }
 

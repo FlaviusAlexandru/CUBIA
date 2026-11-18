@@ -360,6 +360,17 @@ namespace DataViz.Networking
                 case PlotOp.SetLayerLabelColumn: m.RequestSetLayerLabelColumnRpc(r.Layer, r.Int); return true;
                 case PlotOp.SetComputedAxis: m.RequestSetComputedAxisRpc(r.Layer, r.Int); return true;
                 case PlotOp.SetComputedColumn: m.RequestSetComputedColumnRpc(r.Layer, r.Int); return true;
+
+                case PlotOp.SetAxisAspect: m.RequestSetAxisAspectRpc((AxisAspect)r.Int); return true;
+                case PlotOp.SetAxisRange:
+                    m.RequestSetAxisRangeRpc(r.Int, (AxisRangeMode)(int)r.Float,
+                        r.RangeMins != null && r.RangeMins.Length > 0 ? r.RangeMins[0] : 0f,
+                        r.RangeMaxs != null && r.RangeMaxs.Length > 0 ? r.RangeMaxs[0] : 0f);
+                    return true;
+                case PlotOp.SetAxisReverse: m.RequestSetAxisReverseRpc(r.Int, r.Bool); return true;
+                case PlotOp.SetAxisGroup: m.RequestSetAxisGroupRpc(r.Int, r.Bool); return true;
+                case PlotOp.SetAxisPadding: m.RequestSetAxisPaddingRpc(r.Float); return true;
+                case PlotOp.ResetAxes: m.RequestResetAxesRpc(); return true;
                 default: return false;
             }
         }

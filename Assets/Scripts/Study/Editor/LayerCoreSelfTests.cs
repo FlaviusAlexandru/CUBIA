@@ -287,7 +287,7 @@ namespace DataViz.Study
             AxisFrame own = LayerBounds.FrameFor(b, ml, LayerBounds.Compute(stack.Layers));
             t.True("normalised frame own range", own.X.Min == 5f && own.X.Max == 20f);
 
-            t.True("axis title differs", string.Join("|", LayerBounds.AxisTitleLines(stack.Layers, 0)) == "movement: X|moles: X (normalised)");
+            t.True("axis title differs", string.Join("|", LayerBounds.AxisTitleLines(stack.Layers, 0)) == "movement: X|moles: X (own scale)");
             b.Normalised = false;
             t.True("axis title same", string.Join("|", LayerBounds.AxisTitleLines(stack.Layers, 0)) == "X");
 

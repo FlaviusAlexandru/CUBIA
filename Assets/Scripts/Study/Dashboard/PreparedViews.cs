@@ -520,8 +520,28 @@ namespace DataViz.Study
                 return ApplyLayersBatched(m, view, files);
         }
 
+        /// <summary>
+        /// The axis settings every WAM+IA prepared view uses (axis-scales spec ASR-12, Q7): Fit each
+        /// axis, 0 % padding, every axis Auto and not reversed, so the study's views look as they did
+        /// before the feature. Through the manager's requests, so it syncs and is logged.
+        /// </summary>
+        public static void UseStudyAxes(MultiplayerScatterplotManager m)
+        {
+            if (m == null) return;
+            m.RequestSetAxisAspectRpc(AxisAspect.FitEach);
+            m.RequestSetAxisPaddingRpc(0f);
+            for (int axis = 0; axis < 3; axis++)
+            {
+                if (m.Axes.Mode(axis) != AxisRangeMode.Auto)
+                    m.RequestSetAxisRangeRpc(axis, AxisRangeMode.Auto, 0f, 0f);
+                if (m.Axes.Reversed(axis))
+                    m.RequestSetAxisReverseRpc(axis, false);
+            }
+        }
+
         static string ApplyLayersBatched(MultiplayerScatterplotManager m, PreparedView view, IReadOnlyList<string> files)
         {
+            UseStudyAxes(m);
             m.RequestLoadDatasetRpc(files[0]); // synchronous on the host
             if (m.LoadedDataset == null || !SameFile(m.CurrentDatasetName, files[0]))
                 return $"Could not load {files[0]} (see Console)";

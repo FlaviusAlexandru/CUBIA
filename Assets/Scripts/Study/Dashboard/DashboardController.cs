@@ -1288,6 +1288,7 @@ namespace DataViz.Study
             {
                 MultiplayerScatterplotManager m = m_Manager;
                 using IDisposable batch = m.BatchChanges(); // one rebuild for the whole view
+                PreparedViews.UseStudyAxes(m); // ASR-12: the study's views keep the stretched cube
                 if (reload)
                 {
                     m.RequestLoadDatasetRpc(file); // synchronous on the host: LoadedDataset is set afterwards

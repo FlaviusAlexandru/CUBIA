@@ -229,17 +229,31 @@ namespace DataViz
             return string.IsNullOrEmpty(name) ? -1 : ds.GetColumnIndex(name);
         }
 
-        /// <summary>The axis holding source's time column (0 X, 1 Y, 2 Z), else 2 (Z).</summary>
+        /// <summary>
+        /// The Trendline's auto driver (predictor) axis: the axis holding source's time column
+        /// (0 X, 1 Y, 2 Z), else 0 (X), as in R's geom_smooth where x predicts y. Only Trendline
+        /// uses this; Reference defaults to Y and Path / SmoothedPath follow an order column.
+        /// </summary>
         public static int DefaultDriverAxis(PlotLayer source)
         {
             if (source == null || source.TimeColumnIndex < 0)
-                return 2;
+                return 0;
             for (int axis = 0; axis < 3; axis++)
             {
                 if (AxisColumn(source, axis) == source.TimeColumnIndex)
                     return axis;
             }
-            return 2;
+            return 0;
         }
+
+        /// <summary>Default SmoothSpan of a smoothed Trendline: R's loess default span.</summary>
+        public const float DefaultTrendlineSpan = 0.75f;
+
+        /// <summary>Default SmoothSpan of a SmoothedPath (moving-average window as a fraction of the points).</summary>
+        public const float DefaultPathSpan = 0.1f;
+
+        /// <summary>SmoothSpan a new computed layer of kind starts with: Trendline 0.75 (loess), else 0.1.</summary>
+        public static float DefaultSmoothSpan(ComputedLayerKind kind) =>
+            kind == ComputedLayerKind.Trendline ? DefaultTrendlineSpan : DefaultPathSpan;
     }
 }

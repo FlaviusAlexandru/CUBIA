@@ -169,7 +169,7 @@ namespace DataViz.Study
             p = Build(stack).Props;
             t.Eq("trend: smoothed", "Smoothed: on", p.FlagText);
             t.Eq("trend: span when smoothed", true, p.ShowSpan);
-            t.Eq("trend: span text", "Span 10%", p.SpanText);
+            t.Eq("trend: span text (loess default)", "Span 75%", p.SpanText);
             t.Eq("trend: axis Y", 2, p.DriverAxisChoice);
 
             stack.SetActive(a.Id);

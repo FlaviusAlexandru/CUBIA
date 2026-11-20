@@ -376,8 +376,8 @@ namespace DataViz.MenuUI
         {
             if (m_Manager == null || layer == null) return 1f;
             LayerStack stack = m_Manager.Stack;
-            PlotLayer source = stack.Find(layer.SourceLayerId) ?? layer;
-            int axis = layer.DriverAxis >= 0 ? layer.DriverAxis : LayerRules.DefaultDriverAxis(source);
+            // Auto (-1) means Y for a Reference, as in ComputedLayerBuilder.DriverAxis.
+            int axis = layer.DriverAxis >= 0 ? layer.DriverAxis : 1;
             AxisFrame frame = LayerBounds.FrameInStack(layer, stack, m_Manager.SharedBounds);
             return LayersPanelModel.ReferenceStep(frame.Get(Mathf.Clamp(axis, 0, 2)));
         }

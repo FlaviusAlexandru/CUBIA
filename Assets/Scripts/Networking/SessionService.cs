@@ -96,7 +96,7 @@ namespace DataViz.Networking
                 {
                     MaxPlayers = MaxPlayers,
                     IsPrivate = true, // joinable by code only, never listed
-                }.WithRelayNetwork(new RelayNetworkOptions(RelayProtocol.WSS)); // WebSocket over 443: gets through eduroam/campus firewalls that block UDP
+                }.WithRelayNetwork().WithNetworkOptions(RelayOverWebSockets());
                 AddMemberProperty(options, k_ModeProperty, ((int)mode).ToString());
                 AddMemberProperty(options, k_DatasetProperty, datasetName);
                 AddMemberProperty(options, k_DatasetHashProperty, DatasetHash.Of(datasetName));
@@ -121,7 +121,8 @@ namespace DataViz.Networking
             try
             {
                 await UgsBootstrap.EnsureSignedInAsync();
-                ISession session = await MultiplayerService.Instance.JoinSessionByCodeAsync(code, new JoinSessionOptions());
+                var options = new JoinSessionOptions().WithNetworkOptions(RelayOverWebSockets());
+                ISession session = await MultiplayerService.Instance.JoinSessionByCodeAsync(code, options);
                 RememberCode(code);
                 AttachSession(session, SessionState.Client, ReadMode(session));
             }
@@ -257,6 +258,12 @@ namespace DataViz.Networking
             SetOffline();
             PostMessage($"{what}: {e.Message}");
         }
+
+        // Relay over WebSockets (WSS on 443) gets through eduroam/campus firewalls that block UDP. The
+        // protocol must be set on the host AND on every joiner: a joiner left on the default protocol gets
+        // DTLS relay data while CanStart has switched its transport to WebSockets, so NGO fails to start
+        // ("Failed to start NetworkManager") and the join is refused.
+        static NetworkOptions RelayOverWebSockets() => new() { RelayProtocol = RelayProtocol.WSS };
 
         // Normally the session stops NGO itself; this only catches a NetworkManager left running.
         static void ShutdownNetwork()

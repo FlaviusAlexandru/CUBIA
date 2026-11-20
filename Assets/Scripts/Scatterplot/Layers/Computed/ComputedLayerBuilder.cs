@@ -179,7 +179,7 @@ namespace DataViz
             return true;
         }
 
-        /// <summary>DriverAxis when set (0..2); else Reference: Y; other kinds: the axis holding the source's time column (LayerRules.DefaultDriverAxis).</summary>
+        /// <summary>DriverAxis when set (0..2); else Reference: Y; Trendline: the axis holding the source's time column, else X (LayerRules.DefaultDriverAxis).</summary>
         static int DriverAxis(PlotLayer computed, PlotLayer rowLayer)
         {
             if (computed.DriverAxis >= 0 && computed.DriverAxis <= 2)

@@ -294,7 +294,7 @@ namespace DataViz.Study
             // LFR-12: moles Z is numeric, movement Z axis shows a categorical column.
             t.True("can map refused", !LayerRules.CanMapAxis(stack, b, 2, 3, out string msg) && msg.Contains("Phase"));
             t.True("can map same kind", LayerRules.CanMapAxis(stack, b, 0, 1, out _));
-            t.Eq("driver axis default", 2, LayerRules.DefaultDriverAxis(b));
+            t.Eq("driver axis default (time not on an axis): X", 0, LayerRules.DefaultDriverAxis(b));
             a.ZColumnIndex = 0;
             t.Eq("driver axis = time axis", 2, LayerRules.DefaultDriverAxis(a));
             a.XColumnIndex = 0; a.ZColumnIndex = 4;

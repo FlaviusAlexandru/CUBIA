@@ -134,6 +134,7 @@ namespace DataViz
                 SourceLayerId = source.Id,
                 ComputedKind = kind,
                 DriverAxis = -1,
+                SmoothSpan = LayerRules.DefaultSmoothSpan(kind),
                 FixedColour = new UnityEngine.Color32(255, 200, 0, 255), // amber: stands out from the cyan points
             };
             layer.Name = LayerRules.DefaultName(this, layer);

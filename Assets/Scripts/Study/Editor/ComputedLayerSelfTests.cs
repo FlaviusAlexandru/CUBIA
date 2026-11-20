@@ -232,6 +232,30 @@ namespace DataViz.Study
                 t.Near("driver x start", 0f, onX.Polyline[0].x);
                 t.Near("driver x end", 1f, onX.Polyline[1].x);
             }
+
+            // No axis holds the time column: the driver defaults to X (R geom_smooth), not Z.
+            source.XColumnIndex = 1; source.ZColumnIndex = 3;
+            t.Eq("no time axis: driver X", 0, LayerRules.DefaultDriverAxis(source));
+            source.TimeColumnIndex = -1;
+            t.Eq("no time column: driver X", 0, LayerRules.DefaultDriverAxis(source));
+            ComputedShape noTime = Build(trend, stack, out _);
+            t.True("no time column trend valid", noTime.Valid);
+            if (noTime.Valid)
+            {
+                t.Near("no time column driver x start", 0f, noTime.Polyline[0].x);
+                t.Near("no time column driver x end", 1f, noTime.Polyline[1].x);
+            }
+        }
+
+        [SelfTest("Computed: default span by kind (Trendline 0.75 like loess, SmoothedPath 0.1)")]
+        static void DefaultSpanByKind(SelfTestTally t)
+        {
+            var (stack, source) = MovementStack(Movement());
+            t.Near("trendline span", 0.75f, stack.AddComputed(source, ComputedLayerKind.Trendline).SmoothSpan);
+            stack.SetActive(source.Id);
+            t.Near("smoothed path span", 0.1f, stack.AddComputed(source, ComputedLayerKind.SmoothedPath).SmoothSpan);
+            t.Near("kind default trendline", LayerRules.DefaultTrendlineSpan, LayerRules.DefaultSmoothSpan(ComputedLayerKind.Trendline));
+            t.Near("kind default path", LayerRules.DefaultPathSpan, LayerRules.DefaultSmoothSpan(ComputedLayerKind.SmoothedPath));
         }
 
         [SelfTest("Computed: signature ignores style, follows parameters")]

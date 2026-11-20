@@ -826,7 +826,7 @@ namespace DataViz
             LayerSettingChanged();
         }
 
-        /// <summary>Computed only: SmoothSpan, clamped to 0.01..1.</summary>
+        /// <summary>Computed only: SmoothSpan (fraction of the points: loess span for a Trendline, window for a SmoothedPath), clamped to 0.01..1.</summary>
         public void RequestSetComputedSpanRpc(string layerId, float span)
         {
             if (ForwardLayerOp(PlotOp.SetComputedSpan, layerId, floatArg: span)) return;

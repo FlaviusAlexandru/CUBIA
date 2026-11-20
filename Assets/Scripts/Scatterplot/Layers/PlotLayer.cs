@@ -58,7 +58,7 @@ namespace DataViz
         public int OrderColumnIndex = -1;              // Path, SmoothedPath; -1 = source's time column
         public bool Smoothed;                          // Trendline: curve. Reference: plane instead of line
         public float RefValue;                         // Reference: value on DriverAxis, data units
-        public float SmoothSpan = LayerRules.DefaultPathSpan; // fraction of the driver / order range; AddComputed sets LayerRules.DefaultSmoothSpan(kind)
+        public float SmoothSpan = LayerRules.DefaultPathSpan; // fraction of the points: Trendline = loess span (R's), SmoothedPath = moving-average window; AddComputed sets LayerRules.DefaultSmoothSpan(kind)
         public float LineWidth = 0.006f;               // plot units
 
         [NonSerialized] public bool LocalUnavailable;  // this client lacks the dataset or its hash differs

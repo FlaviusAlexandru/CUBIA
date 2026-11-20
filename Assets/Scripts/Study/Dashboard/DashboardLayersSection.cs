@@ -205,6 +205,7 @@ namespace DataViz.Study
             m_Value = FloatOf("Value", v => SetComputedFloat("Value", l => l.RefValue, v, (id, f) => m_Manager.RequestSetComputedValueRpc(id, f)));
             m_Computed.Add(m_Value);
             m_Span = FloatOf("Smoothing span", v => SetComputedFloat("Span", l => l.SmoothSpan, v, (id, f) => m_Manager.RequestSetComputedSpanRpc(id, f)));
+            m_Span.tooltip = "Fraction of the points (0.01..1). Curved trendline: loess span, as R's loess / geom_smooth (default 0.75). Smoothed path: moving-average window.";
             m_Computed.Add(m_Span);
             m_LineWidth = FloatOf("Line width", OnLineWidth);
             m_Computed.Add(m_LineWidth);

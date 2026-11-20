@@ -38,12 +38,16 @@ namespace DataViz
         public const int DefaultMaxVertices = 20000;
 
         /// <summary>
-        /// Fits the two other axes against driverAxis (Q10 option a). Linear: least squares, two
-        /// vertices at the smallest and largest driver value. Smoothed: the points are binned into
-        /// SmoothBins bins along the driver, then a local-linear Gaussian kernel fit (bandwidth
-        /// span × driver range, like loess of degree 1) is evaluated at SmoothSamples evenly spaced
-        /// driver values. Local-linear rather than a plain kernel average so the curve does not bend
-        /// towards the mean at both ends. Invalid with fewer than two points or no driver range.
+        /// Fits the two other axes against driverAxis (Q10 option a), each one separately. Linear:
+        /// least squares, two vertices at the smallest and largest driver value. Smoothed: loess as
+        /// in R's stats::loess and ggplot2 geom_smooth(method = "loess") with their defaults (local
+        /// quadratic, tricube weights, family gaussian so no robustness iterations), evaluated
+        /// directly (R's surface = "direct") at SmoothSamples evenly spaced driver values. span is
+        /// R's span: the fraction of the points in each local fit, clamped to 0.01..1. For speed the
+        /// points are first binned into SmoothBins bins along the driver; each non-empty bin is one
+        /// observation at its mean driver value, weighted by its count, so the result equals loess on
+        /// the raw points whenever there are no more distinct driver values than bins (otherwise up
+        /// to binning error). Invalid with fewer than two points or no driver range.
         /// </summary>
         public static ComputedShape Trendline(IReadOnlyList<Vector3> points, int driverAxis, bool smoothed, float span)
         {
@@ -91,6 +95,8 @@ namespace DataViz
                 return new ComputedShape { Valid = true, Polyline = line };
             }
 
+            // One observation per non-empty bin: x = mean driver value, y = mean of a / b, weight =
+            // count. Exact when every bin holds a single distinct driver value.
             var count = new double[SmoothBins];
             var sumD = new double[SmoothBins];
             var sumA = new double[SmoothBins];
@@ -108,48 +114,167 @@ namespace DataViz
                 sumB[bin] += p[b];
             }
 
-            double sigma = Math.Max(0.01, Math.Min(1.0, span)) * range;
+            int m = 0;
+            var bx = new double[SmoothBins];
+            var bn = new double[SmoothBins];
+            var ba = new double[SmoothBins];
+            var bb = new double[SmoothBins];
+            for (int bin = 0; bin < SmoothBins; bin++)
+            {
+                double c = count[bin];
+                if (c <= 0)
+                    continue;
+                bx[m] = sumD[bin] / c; // ascending: bins are disjoint driver intervals
+                bn[m] = c;
+                ba[m] = sumA[bin] / c;
+                bb[m] = sumB[bin] / c;
+                m++;
+            }
+
+            double f = float.IsFinite(span) ? Math.Max(MinTrendSpan, Math.Min(MaxTrendSpan, span)) : LayerRules.DefaultTrendlineSpan;
+            double q = Math.Min(n, Math.Max(1.0, Math.Floor(n * f))); // R: nf = min(n, floor(n * span))
+            var w = new double[m];
             var curve = new List<Vector3>(SmoothSamples);
             for (int k = 0; k < SmoothSamples; k++)
             {
                 double x = min + range * k / (SmoothSamples - 1);
-                double s0 = 0, s1 = 0, s2 = 0, ta = 0, ta1 = 0, tb = 0, tb1 = 0;
-                for (int bin = 0; bin < SmoothBins; bin++)
-                {
-                    if (count[bin] <= 0)
-                        continue;
-                    double c = count[bin];
-                    double dx = sumD[bin] / c - x;
-                    double u = dx / sigma;
-                    double w = c * Math.Exp(-0.5 * u * u);
-                    if (w <= 0)
-                        continue;
-                    double ya = sumA[bin] / c, yb = sumB[bin] / c;
-                    s0 += w; s1 += w * dx; s2 += w * dx * dx;
-                    ta += w * ya; ta1 += w * dx * ya;
-                    tb += w * yb; tb1 += w * dx * yb;
-                }
-                if (s0 < 1e-12)
-                    continue; // no data within reach of this sample: leave it out rather than invent a value
-
-                double det = s0 * s2 - s1 * s1;
-                double fitA, fitB;
-                if (det > 1e-9 * s0 * s2 && det > 0)
-                {
-                    fitA = (s2 * ta - s1 * ta1) / det;
-                    fitB = (s2 * tb - s1 * tb1) / det;
-                }
-                else
-                {
-                    fitA = ta / s0; // all weight in one place: the local mean is all we can say
-                    fitB = tb / s0;
-                }
-                curve.Add(Compose(driverAxis, a, b, x, fitA, fitB));
+                if (LoessAt(bx, bn, ba, bb, m, x, q, f, w, out double fitA, out double fitB))
+                    curve.Add(Compose(driverAxis, a, b, x, fitA, fitB));
             }
 
             if (curve.Count < 2)
                 return default;
             return new ComputedShape { Valid = true, Polyline = curve.ToArray() };
+        }
+
+        const double MinTrendSpan = 0.01, MaxTrendSpan = 1.0; // same range as RequestSetComputedSpanRpc
+
+        /// <summary>
+        /// One loess estimate at x for both fitted axes. Neighbourhood: the bins nearest x, nearest
+        /// first, until their counts reach q points (R: the q nearest points); dmax = distance to the
+        /// farthest bin taken (times span when span > 1, as R does with one predictor). Weights:
+        /// count × (1 - (d/dmax)³)³, so the farthest bin gets 0 like R's q-th point. Fit: weighted
+        /// least squares quadratic in u = (x_i - x) / dmax (centred and scaled for a stable solve);
+        /// the estimate is its intercept. Falls back to a line and then to the weighted mean when
+        /// fewer than three (two) driver values carry weight or the normal equations are singular.
+        /// w is scratch space of length >= m. False when there is nothing to fit.
+        /// </summary>
+        static bool LoessAt(double[] bx, double[] bn, double[] ba, double[] bb, int m, double x, double q, double span,
+                            double[] w, out double fitA, out double fitB)
+        {
+            fitA = fitB = 0;
+            if (m == 0)
+                return false;
+
+            int hi = 0;
+            while (hi < m && bx[hi] < x)
+                hi++;
+            int lo = hi - 1;
+            double taken = 0, dmax = 0;
+            while (taken < q && (lo >= 0 || hi < m))
+            {
+                double dl = lo >= 0 ? x - bx[lo] : double.PositiveInfinity;
+                double dh = hi < m ? bx[hi] - x : double.PositiveInfinity;
+                if (dl <= dh) { taken += bn[lo]; dmax = dl; lo--; }
+                else { taken += bn[hi]; dmax = dh; hi++; }
+            }
+            int first = lo + 1, last = hi - 1;
+            dmax *= Math.Max(1.0, span);
+            double h = dmax > 0 ? dmax : 1.0;
+
+            int carrying = 0;
+            for (int i = first; i <= last; i++)
+            {
+                double wi;
+                if (dmax <= 0)
+                    wi = bn[i]; // every point taken sits exactly at x
+                else
+                {
+                    double u = Math.Abs(bx[i] - x) / dmax;
+                    double t = u < 1 ? 1 - u * u * u : 0;
+                    wi = bn[i] * t * t * t;
+                }
+                w[i] = wi;
+                if (wi > 0)
+                    carrying++;
+            }
+            if (carrying == 0)
+            {
+                // Only the boundary bin is in reach (span tiny): its mean is all we can say.
+                for (int i = first; i <= last; i++)
+                    w[i] = bn[i];
+                carrying = last - first + 1;
+            }
+
+            double m0 = 0, m1 = 0, m2 = 0, m3 = 0, m4 = 0, a0 = 0, a1 = 0, a2 = 0, b0 = 0, b1 = 0, b2 = 0;
+            for (int i = first; i <= last; i++)
+            {
+                double wi = w[i];
+                if (wi <= 0)
+                    continue;
+                double u = (bx[i] - x) / h;
+                double wu = wi * u, wu2 = wu * u;
+                m0 += wi; m1 += wu; m2 += wu2; m3 += wu2 * u; m4 += wu2 * u * u;
+                a0 += wi * ba[i]; a1 += wu * ba[i]; a2 += wu2 * ba[i];
+                b0 += wi * bb[i]; b1 += wu * bb[i]; b2 += wu2 * bb[i];
+            }
+
+            for (int degree = Math.Min(2, carrying - 1); degree >= 0; degree--)
+            {
+                if (Intercept(degree + 1, m0, m1, m2, m3, m4, a0, a1, a2, out fitA) &&
+                    Intercept(degree + 1, m0, m1, m2, m3, m4, b0, b1, b2, out fitB))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The intercept of a local polynomial with size coefficients (1..3) from its weighted normal
+        /// equations [m0 m1 m2; m1 m2 m3; m2 m3 m4] c = [t0 t1 t2], by Gaussian elimination with
+        /// partial pivoting. False when a pivot is negligible against m0 (singular).
+        /// </summary>
+        static bool Intercept(int size, double m0, double m1, double m2, double m3, double m4,
+                              double t0, double t1, double t2, out double c0)
+        {
+            c0 = 0;
+            if (!(m0 > 0))
+                return false;
+            if (size == 1)
+            {
+                c0 = t0 / m0;
+                return true;
+            }
+
+            var s = new double[3, 4] { { m0, m1, m2, t0 }, { m1, m2, m3, t1 }, { m2, m3, m4, t2 } };
+            for (int col = 0; col < size; col++)
+            {
+                int pivot = col;
+                for (int r = col + 1; r < size; r++)
+                    if (Math.Abs(s[r, col]) > Math.Abs(s[pivot, col]))
+                        pivot = r;
+                if (!(Math.Abs(s[pivot, col]) > 1e-10 * m0))
+                    return false;
+                if (pivot != col)
+                    for (int c = 0; c < 4; c++)
+                        (s[col, c], s[pivot, c]) = (s[pivot, c], s[col, c]);
+                for (int r = col + 1; r < size; r++)
+                {
+                    double factor = s[r, col] / s[col, col];
+                    for (int c = col; c < 4; c++)
+                        s[r, c] -= factor * s[col, c];
+                }
+            }
+
+            var coef = new double[3];
+            for (int r = size - 1; r >= 0; r--)
+            {
+                double sum = s[r, 3];
+                for (int c = r + 1; c < size; c++)
+                    sum -= s[r, c] * coef[c];
+                coef[r] = sum / s[r, r];
+            }
+            c0 = coef[0];
+            return !(double.IsNaN(c0) || double.IsInfinity(c0));
         }
 
         /// <summary>

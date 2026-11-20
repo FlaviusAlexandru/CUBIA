@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using UnityEngine;
 using Col = DataViz.Study.SelfTestKit.Col;
 
@@ -91,6 +92,174 @@ namespace DataViz.Study
             t.Near("smooth within cosine", 0f, worstZ, 0.06f);
             t.Near("smooth starts at driver min", 0f, s.Polyline[0].x, 1e-4f);
             t.Near("smooth ends at driver max", 2f * Mathf.PI, s.Polyline[s.Polyline.Length - 1].x, 1e-3f);
+        }
+
+        // Straightforward loess at x0 on raw points, double precision, solved by Cramer's rule: R's
+        // stats::loess with surface = "direct", degree 2, family gaussian. q = min(n, floor(n * span))
+        // nearest points, dmax = distance to the q-th, weights (1 - (d/dmax)^3)^3. The independent
+        // reference the binned production code is checked against.
+        static double ReferenceLoess(double[] xs, double[] ys, double span, double x0)
+        {
+            int n = xs.Length;
+            int q = Math.Min(n, (int)Math.Floor(n * span));
+            var d = new double[n];
+            for (int i = 0; i < n; i++)
+                d[i] = Math.Abs(xs[i] - x0);
+            var sorted = (double[])d.Clone();
+            Array.Sort(sorted);
+            double dmax = sorted[q - 1] * Math.Max(1.0, span);
+            double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (d[i] >= dmax)
+                    continue;
+                double c = 1 - Math.Pow(d[i] / dmax, 3);
+                double w = c * c * c;
+                double dx = xs[i] - x0;
+                s0 += w; s1 += w * dx; s2 += w * dx * dx; s3 += w * dx * dx * dx; s4 += w * dx * dx * dx * dx;
+                t0 += w * ys[i]; t1 += w * dx * ys[i]; t2 += w * dx * dx * ys[i];
+            }
+            double det = Det3(s0, s1, s2, s1, s2, s3, s2, s3, s4);
+            return Det3(t0, s1, s2, t1, s2, s3, t2, s3, s4) / det;
+        }
+
+        static double Det3(double a, double b, double c, double d, double e, double f, double g, double h, double i) =>
+            a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+
+        // x = 0..39, y = sin(x/5)*10 + ((x*7919) %% 13 - 6) (R notation); z another curve.
+        static double LoessDataY(int x) => Math.Sin(x / 5.0) * 10 + ((x * 7919) % 13 - 6);
+        static double LoessDataZ(int x) => Math.Cos(x / 7.0) * 3 + x % 4;
+
+        [SelfTest("Computed: loess reproduces an exact quadratic")]
+        static void LoessQuadratic(SelfTestTally t)
+        {
+            // y = 2 + 3x - 0.5x^2, z = 1 - x + 0.25x^2 on x = 0..20, driver X: a local quadratic fit
+            // reproduces both exactly, whatever the span.
+            var points = new List<Vector3>();
+            for (int x = 0; x <= 20; x++)
+                points.Add(new Vector3(x, 2f + 3f * x - 0.5f * x * x, 1f - x + 0.25f * x * x));
+            foreach (float span in new[] { 0.75f, 0.2f, 1f })
+            {
+                ComputedShape s = ComputedLayerMath.Trendline(points, 0, true, span);
+                t.True("quadratic valid span " + span, s.Valid);
+                t.Eq("quadratic 64 vertices span " + span, ComputedLayerMath.SmoothSamples, s.Polyline?.Length ?? 0);
+                if (!s.Valid) continue;
+                float worstY = 0f, worstZ = 0f;
+                foreach (Vector3 p in s.Polyline)
+                {
+                    double x = p.x;
+                    worstY = Mathf.Max(worstY, (float)Math.Abs(p.y - (2 + 3 * x - 0.5 * x * x)));
+                    worstZ = Mathf.Max(worstZ, (float)Math.Abs(p.z - (1 - x + 0.25 * x * x)));
+                }
+                t.Near("quadratic y exact span " + span, 0f, worstY, 2e-4f);
+                t.Near("quadratic z exact span " + span, 0f, worstZ, 2e-4f);
+            }
+        }
+
+        [SelfTest("Computed: smoothed trendline equals unbinned loess (R defaults)")]
+        static void LoessReference(SelfTestTally t)
+        {
+            const int n = 40;
+            var xs = new double[n]; var ys = new double[n]; var zs = new double[n];
+            var points = new List<Vector3>();
+            for (int i = 0; i < n; i++)
+            {
+                xs[i] = i; ys[i] = LoessDataY(i); zs[i] = LoessDataZ(i);
+                points.Add(new Vector3(i, (float)ys[i], (float)zs[i]));
+            }
+            foreach (float span in new[] { 0.75f, 0.3f, 0.1f })
+            {
+                ComputedShape s = ComputedLayerMath.Trendline(points, 0, true, span);
+                t.Eq("loess 64 vertices span " + span, ComputedLayerMath.SmoothSamples, s.Polyline?.Length ?? 0);
+                if (s.Polyline == null || s.Polyline.Length != ComputedLayerMath.SmoothSamples) continue;
+                double worstY = 0, worstZ = 0;
+                for (int k = 0; k < s.Polyline.Length; k++)
+                {
+                    double x0 = (n - 1) * (double)k / (ComputedLayerMath.SmoothSamples - 1);
+                    worstY = Math.Max(worstY, Math.Abs(s.Polyline[k].y - ReferenceLoess(xs, ys, span, x0)));
+                    worstZ = Math.Max(worstZ, Math.Abs(s.Polyline[k].z - ReferenceLoess(xs, zs, span, x0)));
+                }
+                t.Near("loess y = reference span " + span, 0f, (float)worstY, 1e-3f);
+                t.Near("loess z = reference span " + span, 0f, (float)worstZ, 1e-3f);
+            }
+
+            // Samples 0, 21, 42, 63 sit at x = 0, 13, 26, 39: compare in RStudio with
+            // x <- 0:39; y <- sin(x/5)*10 + ((x*7919) %% 13 - 6)
+            // predict(loess(y ~ x, span = 0.75, degree = 2, surface = "direct"), data.frame(x = c(0, 13, 26, 39)))
+            // Expected values: Cleveland's netlib loess (the Fortran inside R's stats::loess) via
+            // scikit-misc, surface = "direct". R's default surface = "interpolate" (kd-tree + cubic
+            // interpolation, what geom_smooth draws) gives -1.1425, 4.1725, -8.1538, 13.7291 instead.
+            ComputedShape d = ComputedLayerMath.Trendline(points, 0, true, 0.75f);
+            float[] direct75 = { -1.1238f, 4.6281f, -8.0861f, 13.7427f };
+            ComputedShape d30 = ComputedLayerMath.Trendline(points, 0, true, 0.3f);
+            float[] direct30 = { -7.0630f, 3.9230f, -10.0331f, 9.3573f };
+            int[] at = { 0, 21, 42, 63 };
+            for (int i = 0; i < at.Length; i++)
+            {
+                if (d.Valid) t.Near("R loess span 0.75 at x = " + d.Polyline[at[i]].x, direct75[i], d.Polyline[at[i]].y, 1e-3f);
+                if (d30.Valid) t.Near("R loess span 0.3 at x = " + d30.Polyline[at[i]].x, direct30[i], d30.Polyline[at[i]].y, 1e-3f);
+            }
+            if (d.Valid)
+                UnityEngine.Debug.Log("[ComputedLayerSelfTests] loess span 0.75 at x = 0, 13, 26, 39: " +
+                    string.Join(", ", new[] { 0, 21, 42, 63 }.Select(k => d.Polyline[k].y.ToString("F4", System.Globalization.CultureInfo.InvariantCulture))));
+        }
+
+        [SelfTest("Computed: smaller loess span follows a sine more closely")]
+        static void LoessSpan(SelfTestTally t)
+        {
+            var points = new List<Vector3>();
+            for (int i = 0; i < 200; i++)
+            {
+                float x = 4f * Mathf.PI * i / 199f;
+                points.Add(new Vector3(x, Mathf.Sin(x), 0f));
+            }
+            float Residual(float span)
+            {
+                ComputedShape s = ComputedLayerMath.Trendline(points, 0, true, span);
+                if (!s.Valid) return float.MaxValue;
+                double sum = 0;
+                foreach (Vector3 p in s.Polyline)
+                    sum += (p.y - Math.Sin(p.x)) * (p.y - Math.Sin(p.x));
+                return (float)Math.Sqrt(sum / s.Polyline.Length);
+            }
+            float wide = Residual(0.75f), narrow = Residual(0.2f);
+            t.True("span 0.2 closer than 0.75 (" + narrow + " < " + wide + ")", narrow < wide);
+            t.True("span 0.2 near the sine (rms " + narrow + ")", narrow < 0.02f);
+            t.True("span 0.75 visibly smooths two periods (rms " + wide + ")", wide > 0.1f);
+        }
+
+        [SelfTest("Computed: loess edge cases fall back, never throw")]
+        static void LoessEdges(SelfTestTally t)
+        {
+            // Two distinct driver values: a line through the two means.
+            var two = new List<Vector3> { new(0, 1, 5), new(0, 3, 5), new(10, 11, 7), new(10, 13, 7) };
+            ComputedShape line = ComputedLayerMath.Trendline(two, 0, true, 1f);
+            t.True("two x valid", line.Valid);
+            if (line.Valid)
+            {
+                NearV(t, "two x start", new Vector3(0, 2, 5), line.Polyline[0], 1e-3f);
+                NearV(t, "two x end", new Vector3(10, 12, 7), line.Polyline[line.Polyline.Length - 1], 1e-3f);
+            }
+            // Three points, tiny span: constant fallback, finite.
+            var three = new List<Vector3> { new(0, 1, 0), new(1, 4, 0), new(2, 9, 0) };
+            ComputedShape tiny = ComputedLayerMath.Trendline(three, 0, true, 0.01f);
+            t.True("tiny span valid", tiny.Valid);
+            bool finite = tiny.Valid;
+            if (tiny.Valid)
+                foreach (Vector3 p in tiny.Polyline)
+                    finite &= !float.IsNaN(p.y) && !float.IsInfinity(p.y);
+            t.True("tiny span finite", finite);
+            t.True("NaN span valid", ComputedLayerMath.Trendline(three, 0, true, float.NaN).Valid);
+            t.Eq("zero driver range smoothed invalid", false,
+                 ComputedLayerMath.Trendline(new List<Vector3> { new(1, 2, 3), new(4, 5, 3) }, 2, true, 0.75f).Valid);
+            // Large offset (timestamps): still the quadratic.
+            var stamps = new List<Vector3>();
+            for (int i = 0; i <= 30; i++)
+                stamps.Add(new Vector3(1.7e9f + i * 4096f, i * i, 0));
+            ComputedShape st = ComputedLayerMath.Trendline(stamps, 0, true, 0.75f);
+            t.True("timestamps valid", st.Valid);
+            if (st.Valid)
+                t.Near("timestamps end", 900f, st.Polyline[st.Polyline.Length - 1].y, 0.05f);
         }
 
         [SelfTest("Computed: path order and skips")]

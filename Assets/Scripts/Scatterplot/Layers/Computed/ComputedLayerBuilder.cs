@@ -232,9 +232,7 @@ namespace DataViz
                     columns[axis] = columnIndex;
                     string[] table = ds.GetCategoryTable(columnIndex) ?? Array.Empty<string>();
                     AxisScale scale = frame.Get(axis);
-                    var map = new int[table.Length];
-                    for (int i = 0; i < table.Length; i++)
-                        map[i] = scale.IndexOfCategory(table[i]);
+                    int[] map = scale.IndexesOfCategories(table); // one dictionary, not a linear search per category
                     categoryMaps[axis] = map;
                 }
             }

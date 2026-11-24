@@ -442,10 +442,10 @@ namespace DataViz
             if (table == null)
                 return null;
 
-            var remap = new int[table.Length];
+            var labels = new string[table.Length];
             for (int i = 0; i < table.Length; i++)
-                remap[i] = scale.IndexOfCategory(table[i] ?? "");
-            return remap;
+                labels[i] = table[i] ?? "";
+            return scale.IndexesOfCategories(labels); // one dictionary, not a linear search per category
         }
 
         /// <summary>True when a numeric axis set to Limits or Zoom puts this row outside its clip range (ASR-04).</summary>

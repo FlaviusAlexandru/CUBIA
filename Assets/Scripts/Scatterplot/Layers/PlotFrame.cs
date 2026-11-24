@@ -70,6 +70,30 @@ namespace DataViz
         public int IndexOfCategory(string label) =>
             Categories == null || label == null ? -1 : Array.IndexOf(Categories, label);
 
+        /// <summary>
+        /// IndexOfCategory for every label at once, through one dictionary: O(n) where calling
+        /// IndexOfCategory per label is O(n^2) (~15 s for a 50k-category column such as a date read
+        /// as text). Same answers: first index of a repeated category, -1 for a null or missing label.
+        /// </summary>
+        public int[] IndexesOfCategories(string[] labels)
+        {
+            var result = new int[labels?.Length ?? 0];
+            if (result.Length == 0)
+                return result;
+            var index = new System.Collections.Generic.Dictionary<string, int>(Categories?.Length ?? 0);
+            if (Categories != null)
+            {
+                for (int i = 0; i < Categories.Length; i++)
+                {
+                    if (Categories[i] != null)
+                        index.TryAdd(Categories[i], i);
+                }
+            }
+            for (int i = 0; i < labels.Length; i++)
+                result[i] = labels[i] != null && index.TryGetValue(labels[i], out int j) ? j : -1;
+            return result;
+        }
+
         /// <summary>The data value at a 0..1 position (numeric scales; ticks).</summary>
         public float ValueAt(float unit) => Min + unit * (Max - Min);
 

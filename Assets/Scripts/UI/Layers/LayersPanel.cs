@@ -617,7 +617,7 @@ namespace DataViz.MenuUI
                 case Picker.OrderColumn:
                     if (layer == null) return;
                     title = "Order " + layer.Name + " by";
-                    options = LayersPanelModel.ColumnOptions(LayersPanelModel.RowDataset(stack, layer), "Time column (default)");
+                    options = LayersPanelModel.ColumnOptions(LayersPanelModel.RowDataset(stack, layer), "Row order"); // -1 = PlotLayer.OrderByRow
                     break;
                 case Picker.SavedView:
                     title = "Saved views (loading one replaces all layers)";

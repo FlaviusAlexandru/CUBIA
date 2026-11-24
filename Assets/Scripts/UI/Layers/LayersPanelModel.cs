@@ -278,7 +278,7 @@ namespace DataViz.MenuUI
                     ? (layer.Smoothed ? "Shape: plane" : "Shape: line")
                     : (layer.Smoothed ? "Smoothed: on" : "Smoothed: off");
                 p.ShowOrderColumn = kind == ComputedLayerKind.Path || kind == ComputedLayerKind.SmoothedPath;
-                p.OrderColumnText = "Order: " + (layer.OrderColumnIndex < 0 ? "time column" : ColumnName(rowData, layer.OrderColumnIndex));
+                p.OrderColumnText = "Order: " + (layer.OrderColumnIndex < 0 ? "row order" : ColumnName(rowData, layer.OrderColumnIndex));
                 p.ShowSpan = kind == ComputedLayerKind.SmoothedPath || (kind == ComputedLayerKind.Trendline && layer.Smoothed);
                 p.SpanText = "Span " + Mathf.RoundToInt(layer.SmoothSpan * 100f).ToString(CultureInfo.InvariantCulture) + "%";
                 p.ShowValue = kind == ComputedLayerKind.Reference;

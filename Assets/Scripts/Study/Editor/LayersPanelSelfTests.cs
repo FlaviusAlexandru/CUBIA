@@ -186,7 +186,12 @@ namespace DataViz.Study
             PlotLayer path = stack.AddComputed(a, ComputedLayerKind.Path);
             p = Build(stack).Props;
             t.Eq("path: order column", true, p.ShowOrderColumn);
-            t.Eq("path: order default", "Order: time column", p.OrderColumnText);
+            t.Eq("path: order frozen at creation", a.TimeColumnIndex >= 0
+                ? "Order: " + LayersPanelModel.ColumnName(a.Dataset, a.TimeColumnIndex) : "Order: row order", p.OrderColumnText);
+            int frozen = path.OrderColumnIndex;
+            path.OrderColumnIndex = PlotLayer.OrderByRow;
+            t.Eq("path: row order label", "Order: row order", Build(stack).Props.OrderColumnText);
+            path.OrderColumnIndex = frozen;
             t.Eq("path: no axis", false, p.ShowDriverAxis);
             t.Eq("path: no flag", false, p.ShowFlag);
             path.OrderColumnIndex = 2;

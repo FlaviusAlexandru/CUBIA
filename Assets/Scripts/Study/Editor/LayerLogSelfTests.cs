@@ -149,7 +149,7 @@ namespace DataViz.Study
                                      Computed("L3", "Path of moles", "L2"));
             string C(Action<LayerSnapshot> change) => Diff(path, WithLayer(path, "L3", change));
             t.Eq("computed axis", "SetComputedParam[Path of moles](Axis=Auto->Axis=X)", C(l => l.DriverAxis = 0));
-            t.Eq("computed order uses source dataset", "SetComputedParam[Path of moles](Order=Auto->Order=HitTime)", C(l => l.OrderColumn = 4));
+            t.Eq("computed order uses source dataset", "SetComputedParam[Path of moles](Order=Row order->Order=HitTime)", C(l => l.OrderColumn = 4));
             t.Eq("computed flag", "SetComputedParam[Path of moles](Smoothed=False->Smoothed=True)", C(l => l.Smoothed = true));
             t.Eq("computed value", "SetComputedParam[Path of moles](Value=0->Value=1.5)", C(l => l.RefValue = 1.5f));
             t.Eq("computed span", "SetComputedParam[Path of moles](Span=0.1->Span=0.25)", C(l => l.SmoothSpan = 0.25f));

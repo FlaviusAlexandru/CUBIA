@@ -263,13 +263,13 @@ namespace DataViz
         }
 
         /// <summary>
-        /// Order value per row for Path / SmoothedPath: OrderColumnIndex, else the source's time
-        /// column (numeric value or category index; NaN for an empty cell, which Path skips). With
+        /// Order value per row for Path / SmoothedPath: OrderColumnIndex (never the live time
+        /// column: AddComputed copies it once) (numeric value or category index; NaN for an empty cell, which Path skips). With
         /// neither, or an untyped column, the dataset's row order.
         /// </summary>
         static List<float> OrderValues(PlotLayer computed, PlotLayer rowLayer, DatasetColumnar ds, List<int> rows)
         {
-            int columnIndex = computed.OrderColumnIndex >= 0 ? computed.OrderColumnIndex : rowLayer.TimeColumnIndex;
+            int columnIndex = computed.OrderColumnIndex; // OrderByRow (-1): no column, row order below
             DatasetColumn column = ds.GetColumn(columnIndex);
             bool typed = column != null && (column.IsNumeric || column.IsCategorical);
 

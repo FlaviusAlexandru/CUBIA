@@ -34,6 +34,7 @@ namespace DataViz.Study
 
         const string k_None = "None";
         const string k_Auto = "Auto";
+        const string k_RowOrder = "Row order";
         static readonly CultureInfo k_Inv = CultureInfo.InvariantCulture;
         static readonly float[] k_Opacities = { 1f, 0.75f, 0.5f, 0.25f };
         static readonly ComputedLayerKind[] k_ComputedKinds =
@@ -433,7 +434,7 @@ namespace DataViz.Study
             {
                 PlotLayer source = m_Manager.Stack.Find(layer.SourceLayerId) ?? layer;
                 m_Axis.SetValueWithoutNotify(m_Axis.choices[Mathf.Clamp(layer.DriverAxis + 1, 0, 3)]);
-                var order = new List<string> { k_Auto };
+                var order = new List<string> { k_RowOrder }; // OrderByRow (-1), then columns
                 order.AddRange(ColumnNames(source.Dataset));
                 m_Order.choices = order;
                 m_Order.SetValueWithoutNotify(Choice(order, layer.OrderColumnIndex + 1));
@@ -628,7 +629,7 @@ namespace DataViz.Study
         void OnOrder(int index)
         {
             PlotLayer layer = m_Manager.ActiveLayer;
-            int column = index - 1;
+            int column = index - 1; // choices: Row order, then columns
             if (layer == null || index < 0 || column == layer.OrderColumnIndex) return;
             DatasetColumnar ds = (m_Manager.Stack.Find(layer.SourceLayerId) ?? layer).Dataset;
             string id = layer.Id;
@@ -738,7 +739,7 @@ namespace DataViz.Study
 
         string KindText(PlotLayer layer) => KindText(layer, m_Manager.Stack);
 
-        static string OrderText(int column, DatasetColumnar ds) => column < 0 ? k_Auto : PlotStateDiff.ColumnName(column, ds);
+        static string OrderText(int column, DatasetColumnar ds) => column < 0 ? k_RowOrder : PlotStateDiff.ColumnName(column, ds);
         static string Bool(bool value) => value ? "True" : "False";
         static string Percent(float value) => Mathf.RoundToInt(value * 100f).ToString(k_Inv) + "%";
 

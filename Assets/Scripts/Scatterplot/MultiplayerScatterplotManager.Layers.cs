@@ -793,14 +793,14 @@ namespace DataViz
             LayerSettingChanged();
         }
 
-        /// <summary>Computed only: OrderColumnIndex (Path, SmoothedPath), a column of the source's dataset or -1.</summary>
+        /// <summary>Computed only: OrderColumnIndex (Path, SmoothedPath), a column of the source's dataset or PlotLayer.OrderByRow (-1).</summary>
         public void RequestSetComputedColumnRpc(string layerId, int columnIndex)
         {
             if (ForwardLayerOp(PlotOp.SetComputedColumn, layerId, columnIndex)) return;
             if (!TryResolveComputed(layerId, "SetComputedColumn", out PlotLayer layer)) return;
 
             PlotLayer source = Stack.Find(layer.SourceLayerId) ?? layer;
-            if (!ValidColumnOrNone(source, columnIndex)) return;
+            if (!ValidColumnOrNone(source, columnIndex)) return; // -1 = PlotLayer.OrderByRow
             layer.OrderColumnIndex = columnIndex;
             LayerSettingChanged();
         }

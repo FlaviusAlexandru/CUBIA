@@ -55,7 +55,9 @@ namespace DataViz
 
         public ComputedLayerKind ComputedKind;         // Computed only, as are the six fields below
         public int DriverAxis = -1;                    // Trendline driver / Reference axis (0 X, 1 Y, 2 Z); -1 = auto
-        public int OrderColumnIndex = -1;              // Path, SmoothedPath; -1 = source's time column
+        public int OrderColumnIndex = -1;              // Path, SmoothedPath: a column of the source's dataset, or OrderByRow (-1). AddComputed sets it once from the source's time column
+        /// <summary>OrderColumnIndex: the dataset's row order.</summary>
+        public const int OrderByRow = -1;
         public bool Smoothed;                          // Trendline: curve. Reference: plane instead of line
         public float RefValue;                         // Reference: value on DriverAxis, data units
         public float SmoothSpan = LayerRules.DefaultPathSpan; // fraction of the points: Trendline = loess span (R's), SmoothedPath = moving-average window; AddComputed sets LayerRules.DefaultSmoothSpan(kind)

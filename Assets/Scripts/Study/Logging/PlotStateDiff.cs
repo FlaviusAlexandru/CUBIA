@@ -408,9 +408,9 @@ namespace DataViz.Study
 
         internal static string TimeBehaviourText(byte value) => ((LayerTimeBehaviour)value).ToString();
 
-        // -1 = LayerRules.DefaultDriverAxis / the source's time column.
+        // Axis: -1 = LayerRules.DefaultDriverAxis. Order: -1 = row order.
         internal static string AxisText(int axis) => axis < 0 ? "Auto" : LayerRules.AxisName(axis);
-        static string OrderColumnText(int column, DatasetColumnar dataset) => column < 0 ? "Auto" : ColumnName(column, dataset);
+        static string OrderColumnText(int column, DatasetColumnar dataset) => column < 0 ? "Row order" : ColumnName(column, dataset);
 
         /// <summary>"Dataset: movement.cdataset", "Subset: movement.cdataset", "Computed: Trendline of Movement".</summary>
         static string LayerKindText(PlotSnapshot s, LayerSnapshot layer)

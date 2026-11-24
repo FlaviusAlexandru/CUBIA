@@ -137,6 +137,10 @@ namespace DataViz
                 SmoothSpan = LayerRules.DefaultSmoothSpan(kind),
                 FixedColour = new UnityEngine.Color32(255, 200, 0, 255), // amber: stands out from the cyan points
             };
+            // A path's order is fixed when it is made: the source's time column at that moment, else row
+            // order. Changing what Animate plays afterwards does not re-sort the line.
+            if (kind == ComputedLayerKind.Path || kind == ComputedLayerKind.SmoothedPath)
+                layer.OrderColumnIndex = source.TimeColumnIndex >= 0 ? source.TimeColumnIndex : PlotLayer.OrderByRow;
             layer.Name = LayerRules.DefaultName(this, layer);
             Append(layer);
             return layer;

@@ -525,6 +525,44 @@ namespace DataViz.Study
             t.Near(name + " vertices", 0f, worst, 1e-5f);
         }
 
+        [SelfTest("Path order: frozen from the time column at creation, row order without one")]
+        static void PathOrderFrozenAtCreation(SelfTestTally t)
+        {
+            // T orders rows 1, 3, 0, 2 → X 10, 20, 30, 40; row order is X 30, 10, 40, 20; by Y it is row order too.
+            DatasetColumnar ds = SelfTestKit.Dataset("path_order_freeze.cdataset",
+                Col.Num("T", 3f, 1f, 4f, 2f),
+                Col.Num("X", 30f, 10f, 40f, 20f),
+                Col.Num("Y", 0f, 1f, 2f, 3f),
+                Col.Num("Z", 1f, 1f, 1f, 1f));
+            var stack = new LayerStack();
+            PlotLayer source = stack.AddDataset(ds.Name, ds);
+            source.XColumnIndex = 1; source.YColumnIndex = 2; source.ZColumnIndex = 3; source.TimeColumnIndex = 0;
+
+            PlotLayer path = stack.AddComputed(source, ComputedLayerKind.SmoothedPath);
+            t.Eq("freeze: order is the time column at creation", 0, path.OrderColumnIndex);
+            source.TimeColumnIndex = 2; // Animate now plays Y
+            t.Eq("freeze: order kept when the time column changes", 0, path.OrderColumnIndex);
+            ComputedShape frozen = Build(path, stack, out _);
+            bool increasing = frozen.Polyline != null && frozen.Polyline.Length == 4;
+            for (int i = 1; increasing && i < frozen.Polyline.Length; i++)
+                increasing = frozen.Polyline[i].x >= frozen.Polyline[i - 1].x - 1e-5f;
+            t.True("freeze: still drawn in T order (x rises)", increasing);
+
+            source.TimeColumnIndex = -1;
+            PlotLayer rows = stack.AddComputed(source, ComputedLayerKind.Path);
+            t.Eq("no time column: row order", PlotLayer.OrderByRow, rows.OrderColumnIndex);
+            source.TimeColumnIndex = 0; // set later: a row-order path does not follow it
+            ComputedShape byRow = Build(rows, stack, out _);
+            t.Eq("row order: all rows", 4, byRow.Polyline?.Length ?? 0);
+            if (byRow.Polyline != null && byRow.Polyline.Length == 4)
+                t.Near("row order: starts at row 0 (X 30 of 10..40)", 2f / 3f, byRow.Polyline[0].x);
+
+            // An older saved view stores -1: it loads as row order even with a time column set.
+            t.Eq("saved -1 is row order", -1, PlotLayer.OrderByRow);
+
+            t.Eq("trendline: order untouched", -1, stack.AddComputed(source, ComputedLayerKind.Trendline).OrderColumnIndex);
+        }
+
         [SelfTest("Computed: builder path, mean, reference")]
         static void BuilderKinds(SelfTestTally t)
         {
